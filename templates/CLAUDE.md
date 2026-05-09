@@ -165,6 +165,31 @@ state=ready-for-human ← Lane 拍板:收下 / 打回 / 推迟
 
 **主 Claude 运维边界**: 跑测试 / 跑接口 / kill 进程 / 起 server **可做**(运维操作);Edit / Write 业务代码 **严禁**(由 settings.json deny 强制)。
 
+## ⛔ 切换编码 agent 接续流程 (Handover 机制)
+
+**触发场景**: 编码 agent failed,且失败原因属"换家可能解决"类(API 限流 / token 配额 / sandbox 异常 / 网络抖动)。
+
+**步骤**(主 Claude 必走):
+
+1. 看 `events.jsonl` 末尾确认失败原因 (read,不依赖 message 关键词)
+2. 决定是否值得换家:
+   - ✅ 值得: rate-limit / quota / sandbox 错(provider 内禀问题)
+   - ❌ 不值得: spec 错 / 业务码 bug / 测试 fail(换家也跑不通,该走 04 修复)
+3. 调 `/retry-other-provider <agent>` 生成 handover.md 骨架
+4. **fill 验收清单**(硬要求): 跑 spec § 自检 grep 矩阵,每条验收点填 ✅/❌
+   - 不能跳过;不填直接派 → 编码 agent 没接续依据可能重做
+   - ✅ 项给具体证据(`file.py:42 已实现`)
+   - ❌ 项说明"还差什么"(`tests/test_x.py 第 N 行 assert 仍 NotImplementedError`)
+5. 调 `/dispatch-<agent> --provider <other>` 派对家
+6. 等编码 agent 完成 → 走标准 review + verify gate
+7. 派单成功 → handover.md 自动归档到 `runtime/archive/`
+
+**反例**(严禁):
+
+- ❌ 看到 failed 直接 retry 同一 provider — 失败原因没解,徒劳
+- ❌ 看到 failed 直接 dispatch 对家 (跳 retry-other-provider) — 没 handover,新 provider 不知接续可能重做
+- ❌ retry-other-provider 后没填 ✅/❌ 直接 dispatch — 新 provider 看到空 ✅/❌ 段会重做
+
 ## 代码审查 Rubric — Karpathy 6 项
 
 审查 Codex 交付物时**必须**逐项走完。未过项直接判失败。

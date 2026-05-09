@@ -321,13 +321,24 @@ COMMIT_BEFORE="$(cd "$WORK_ABS" && git rev-parse HEAD 2>/dev/null || echo NONE)"
 GIT_STATUS_BEFORE_FILE="$(mktemp)"
 (cd "$WORK_ABS" && git status --porcelain 2>/dev/null || true) > "$GIT_STATUS_BEFORE_FILE"
 
-# Build prompt file (preamble + spec) for stdin delivery
+# Build prompt file (preamble + handover[if any] + spec) for stdin delivery
 PROMPT_FILE="$(mktemp)"
 PREAMBLE="$ROOT/.aiagents/prompts/dispatch-preamble.md"
 [ -f "$PREAMBLE" ] && cat "$PREAMBLE" >> "$PROMPT_FILE"
 echo "" >> "$PROMPT_FILE"
 echo "---" >> "$PROMPT_FILE"
 echo "" >> "$PROMPT_FILE"
+
+# Handover detection (provider 切换接续场景, see spec § 7.5)
+HANDOVER_FILE="$RUNTIME_DIR/${AGENT}-handover.md"
+if [ -f "$HANDOVER_FILE" ]; then
+  cat "$HANDOVER_FILE" >> "$PROMPT_FILE"
+  echo "" >> "$PROMPT_FILE"
+  echo "---" >> "$PROMPT_FILE"
+  echo "" >> "$PROMPT_FILE"
+  event "info" "handover.md prepended to prompt (接续派单, provider=$PROVIDER)"
+fi
+
 cat "$SPEC" >> "$PROMPT_FILE"
 
 # Export env for adapter functions
@@ -358,6 +369,14 @@ rm -f "$PROMPT_FILE" "$GIT_STATUS_BEFORE_FILE" "$GIT_STATUS_AFTER_FILE"
 
 case "$COMPLETION" in
   done)
+    # Archive handover.md if it existed (post-success)
+    if [ -f "$HANDOVER_FILE" ]; then
+      ARCHIVE_DIR="$RUNTIME_DIR/archive"
+      mkdir -p "$ARCHIVE_DIR"
+      TS="$(date '+%Y%m%d-%H%M%S')"
+      mv "$HANDOVER_FILE" "$ARCHIVE_DIR/${TS}-${AGENT}-handover.md"
+      event "info" "handover.md archived to runtime/archive/${TS}-${AGENT}-handover.md"
+    fi
     : > "$SIG_DIR/${AGENT}_done"
     event "done" "${PROVIDER} 完成 (rc=$rc)"
     write_state "done-awaiting-review"
@@ -371,6 +390,13 @@ case "$COMPLETION" in
     ;;
   stale)
     # stale = work landed but signal interrupted; treat as done-awaiting-review per memory R55-R59 / R70 SOP
+    if [ -f "$HANDOVER_FILE" ]; then
+      ARCHIVE_DIR="$RUNTIME_DIR/archive"
+      mkdir -p "$ARCHIVE_DIR"
+      TS="$(date '+%Y%m%d-%H%M%S')"
+      mv "$HANDOVER_FILE" "$ARCHIVE_DIR/${TS}-${AGENT}-handover.md"
+      event "info" "handover.md archived (stale path)"
+    fi
     : > "$SIG_DIR/${AGENT}_done"
     event "done" "${PROVIDER} stale-recovered (rc=$rc, work landed)"
     write_state "done-awaiting-review"

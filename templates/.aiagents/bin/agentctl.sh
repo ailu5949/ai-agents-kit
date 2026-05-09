@@ -461,6 +461,116 @@ PY
   echo "released without verify: agent=$agent reason=$reason"
 }
 
+# ---------- retry-other-provider ----------
+# Generates handover.md skeleton from events.jsonl + git log, prompts main Claude to fill ✅/❌ then dispatch对家.
+retry_other_provider() {
+  local agent="${1:-}"
+  [ -n "$agent" ] || { echo "用法: agentctl.sh retry-other-provider <backend|frontend>" >&2; exit 2; }
+  case "$agent" in backend|frontend) ;; *) echo "未知 agent: $agent" >&2; exit 2 ;; esac
+
+  # Read events.jsonl末尾 to find prev provider + failure reason
+  local prev_provider fail_reason
+  read -r prev_provider fail_reason < <("$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$agent" <<'PY'
+import json, sys
+path, agent = sys.argv[1:3]
+prev_provider, fail_reason = "", ""
+try:
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                if rec.get("agent") == agent:
+                    if rec.get("provider"):
+                        prev_provider = rec["provider"]
+                    if rec.get("status") in ("failed", "timeout", "stale"):
+                        fail_reason = rec.get("message", "") or rec.get("reason", "")
+            except Exception: pass
+except Exception: pass
+print(prev_provider, fail_reason)
+PY
+)
+  [ -n "$prev_provider" ] || { echo "未找到 $agent 上次使用的 provider (events.jsonl 无记录)" >&2; exit 2; }
+
+  # Find another provider from config.providers
+  local other_provider
+  other_provider="$("$PYTHON_BIN" - "$CONFIG_JSON" "$prev_provider" <<'PY'
+import json, sys
+cfg, prev = sys.argv[1:3]
+try:
+    d = json.load(open(cfg, encoding='utf-8'))
+    others = [k for k in (d.get("providers") or {}).keys() if k != prev]
+    print(others[0] if others else "")
+except Exception:
+    print("")
+PY
+)"
+  [ -n "$other_provider" ] || { echo "config.json providers 仅含 $prev_provider,无可切换的另一家" >&2; exit 2; }
+
+  # Resolve agent dir
+  local work_dir
+  work_dir="$("$PYTHON_BIN" - "$CONFIG_JSON" "$agent" <<'PY'
+import json, sys
+cfg, agent = sys.argv[1:3]
+try:
+    d = json.load(open(cfg, encoding='utf-8'))
+    ab = d.get("agents") or {}
+    print((ab.get(agent) or {}).get("dir") or (d.get(agent) or {}).get("dir") or "")
+except Exception:
+    print("")
+PY
+)"
+  local work_abs="$ROOT/$work_dir"
+  [ -d "$work_abs" ] || { echo "agent 工作目录不存在: $work_abs" >&2; exit 2; }
+
+  local commits_list status_out
+  commits_list="$(cd "$work_abs" && git log --oneline HEAD --pretty=format:"  - %h %s" -10 2>/dev/null | head -10)"
+  status_out="$(cd "$work_abs" && git status --porcelain 2>/dev/null | sed 's/^/  /')"
+
+  mkdir -p "$RUNTIME_DIR"
+  local handover="$RUNTIME_DIR/${agent}-handover.md"
+  cat > "$handover" <<EOF
+# Handover: $agent 接续派单 (provider $prev_provider → $other_provider)
+
+**触发**: 主 Claude 决定换 provider,前一家 $prev_provider 失败 ($fail_reason)
+
+## 前一轮已落
+
+- 自上次 dispatch 起的 commits:
+$commits_list
+
+- 未 commit 改动:
+$status_out
+
+## Spec 验收清单逐项状态
+
+> **主 Claude 待填**: 跑 spec § 自检 grep 矩阵后填 ✅/❌(每条验收点)
+> 例:
+> - ✅ §1 字段 X 已实现 (file.py:42)
+> - ❌ §3 测试覆盖 Z (pytest tests/test_z.py 仍 NotImplementedError)
+
+(待填)
+
+## 续做要求(硬约束)
+
+1. 基于当前 working tree 状态续做,**不重写** ✅ 状态的模块
+2. 优先补齐 ❌ 状态的验收点(按上序逐项推进)
+3. 如发现前一轮某 ✅ 模块写错,单独 commit 修(commit message 含 "fix prev round")
+4. commit 不覆盖前一轮历史 — 新 commit 在 HEAD 上叠加(禁 git reset / amend / push -f)
+
+## 原 spec 在下一段
+EOF
+
+  event "$agent" "handover-skeleton" "生成 handover 骨架: $prev_provider → $other_provider" "$prev_provider"
+
+  echo "✅ 已生成 handover 骨架: $handover"
+  echo ""
+  echo "next steps (主 Claude):"
+  echo "  1. 跑 spec § 自检 grep 矩阵填 ## Spec 验收清单逐项状态 段"
+  echo "  2. 调 /dispatch-${agent} --provider $other_provider (或 /bugfix-${agent} --provider $other_provider)"
+  echo ""
+  echo "派单成功后 handover.md 自动归档到 runtime/archive/"
+}
+
 case "$COMMAND" in
   status) show_status ;;
   dispatch)
@@ -508,5 +618,8 @@ case "$COMMAND" in
   release-without-verify)
     release_without_verify "${2:-}" "${3:-}"
     ;;
-  *) echo "用法: agentctl.sh {status|dispatch|wait|watch|memory|release-without-verify} [args]" >&2; exit 2 ;;
+  retry-other-provider)
+    retry_other_provider "${2:-}"
+    ;;
+  *) echo "用法: agentctl.sh {status|dispatch|wait|watch|memory|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
 esac
