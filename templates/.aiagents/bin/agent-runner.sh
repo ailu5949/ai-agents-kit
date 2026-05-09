@@ -67,13 +67,43 @@ PY
   echo "$val"
 }
 
-WORK_DIR="$(config_value "${AGENT}.dir" "$( [ "$AGENT" = backend ] && echo BACKEND_DIR || echo FRONTEND_DIR )")"
-CODEX_BIN="$(config_value codex.bin CODEX_BIN)"
-[ -z "$CODEX_BIN" ] && CODEX_BIN="codex"
-CODEX_ARGS="$(config_value codex.args CODEX_ARGS)"
-[ -z "$CODEX_ARGS" ] && CODEX_ARGS="--full-auto"
-TIMEOUT_SECONDS="$(config_value codex.timeout_seconds CODEX_TIMEOUT)"
+# resolve_provider <agent>
+# Echoes the effective provider name. Resolution order:
+#   1. PROVIDER_OVERRIDE env (set by agentctl when --provider passed)
+#   2. agents.<agent>.provider in config.json
+#   3. default_provider in config.json
+#   4. "codex" hardcoded fallback
+resolve_provider() {
+  local agent="$1"
+  if [ -n "${PROVIDER_OVERRIDE:-}" ]; then
+    echo "$PROVIDER_OVERRIDE"; return
+  fi
+  local v
+  v="$(config_value "agents.${agent}.provider" "")"
+  if [ -n "$v" ]; then echo "$v"; return; fi
+  v="$(config_value "default_provider" "")"
+  if [ -n "$v" ]; then echo "$v"; return; fi
+  echo "codex"
+}
+
+WORK_DIR="$(config_value "agents.${AGENT}.dir" "$( [ "$AGENT" = backend ] && echo BACKEND_DIR || echo FRONTEND_DIR )")"
+PROVIDER="$(resolve_provider "$AGENT")"
+PROVIDER_BIN="$(config_value "providers.${PROVIDER}.bin" "")"
+[ -z "$PROVIDER_BIN" ] && PROVIDER_BIN="$PROVIDER"
+PROVIDER_ARGS="$(config_value "providers.${PROVIDER}.args" "")"
+PROVIDER_SUBCMD="$(config_value "providers.${PROVIDER}.subcommand" "")"
+TIMEOUT_SECONDS="${TIMEOUT_OVERRIDE:-$(config_value "providers.${PROVIDER}.timeout" "")}"
 [ -z "$TIMEOUT_SECONDS" ] && TIMEOUT_SECONDS="1800"
+
+# v2 fallback: if providers.* block missing, fall back to legacy codex.* for one transition release
+if [ -z "$PROVIDER_BIN" ] || { [ "$PROVIDER" = "codex" ] && [ -z "$PROVIDER_ARGS" ]; }; then
+  legacy_bin="$(config_value codex.bin CODEX_BIN)"
+  legacy_args="$(config_value codex.args CODEX_ARGS)"
+  [ -n "$legacy_bin" ] && [ -z "$PROVIDER_BIN" ] && PROVIDER_BIN="$legacy_bin"
+  [ -n "$legacy_args" ] && [ -z "$PROVIDER_ARGS" ] && PROVIDER_ARGS="$legacy_args"
+fi
+[ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "codex" ] && PROVIDER_ARGS="--dangerously-bypass-approvals-and-sandbox"
+[ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "claude" ] && PROVIDER_ARGS="--dangerously-skip-permissions"
 
 # ---------- state / event 工具 ----------
 write_state() {
@@ -162,13 +192,14 @@ PY
 
 event() {
   local status="$1" message="$2"
-  "$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$AGENT" "$status" "$message" <<'PY'
+  "$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$AGENT" "$status" "$message" "${PROVIDER:-unknown}" <<'PY'
 import json, sys, datetime, os
-path, agent, status, message = sys.argv[1:5]
+path, agent, status, message, provider = sys.argv[1:6]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 record = {
     "time": datetime.datetime.now().astimezone().isoformat(),
     "agent": agent,
+    "provider": provider,
     "status": status,
     "message": message,
 }
@@ -213,56 +244,102 @@ esac
 
 ABBR="be"; [ "$AGENT" = frontend ] && ABBR="fe"
 LOG="$LOG_DIR/${ABBR}_$(date +%Y%m%d).log"
-PROMPT="$(cat "$SPEC")"
 
 write_state "running"
-event "running" "Codex 开始执行 spec=$(basename "$SPEC")"
+event "running" "${PROVIDER} 开始执行 spec=$(basename "$SPEC")"
 
 {
   echo
   echo "============================================================"
-  echo "agent=$AGENT mode=$MODE time=$(date -Iseconds)"
+  echo "agent=$AGENT mode=$MODE provider=$PROVIDER time=$(date -Iseconds)"
   echo "spec=$SPEC"
   echo "work_dir=$WORK_ABS"
   echo "timeout=${TIMEOUT_SECONDS}s"
   echo "============================================================"
 } >> "$LOG"
 
-if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
-  echo "找不到 Codex 可执行文件: $CODEX_BIN" | tee -a "$LOG" > "$SIG_DIR/${AGENT}_failed"
-  event "failed" "找不到 Codex 可执行文件: $CODEX_BIN"
+if ! command -v "$PROVIDER_BIN" >/dev/null 2>&1; then
+  echo "找不到 provider 可执行文件: $PROVIDER_BIN (provider=$PROVIDER)" | tee -a "$LOG" > "$SIG_DIR/${AGENT}_failed"
+  event "failed" "找不到 provider 可执行文件: $PROVIDER_BIN"
   write_state "failed"
   exit 127
 fi
 
-# ---------- 执行 Codex(超时 + 输出过滤) ----------
+# Source adapter for resolved provider
+ADAPTER="$BIN_DIR/providers/${PROVIDER}.sh"
+if [ ! -f "$ADAPTER" ]; then
+  echo "$AGENT 缺少 provider adapter: $ADAPTER (PROVIDER=$PROVIDER)" > "$SIG_DIR/${AGENT}_failed"
+  event "failed" "缺少 provider adapter: $PROVIDER"
+  write_state "failed"
+  exit 5
+fi
+# shellcheck disable=SC1090
+source "$ADAPTER"
+
+# Capture pre-state for evaluate_completion
+COMMIT_BEFORE="$(cd "$WORK_ABS" && git rev-parse HEAD 2>/dev/null || echo NONE)"
+GIT_STATUS_BEFORE_FILE="$(mktemp)"
+(cd "$WORK_ABS" && git status --porcelain 2>/dev/null || true) > "$GIT_STATUS_BEFORE_FILE"
+
+# Build prompt file (preamble + spec) for stdin delivery
+PROMPT_FILE="$(mktemp)"
+PREAMBLE="$ROOT/.aiagents/prompts/dispatch-preamble.md"
+[ -f "$PREAMBLE" ] && cat "$PREAMBLE" >> "$PROMPT_FILE"
+echo "" >> "$PROMPT_FILE"
+echo "---" >> "$PROMPT_FILE"
+echo "" >> "$PROMPT_FILE"
+cat "$SPEC" >> "$PROMPT_FILE"
+
+# Export env for adapter functions
+export PROVIDER_BIN PROVIDER_ARGS PROVIDER_SUBCMD WORK_ABS LOG_FILE="$LOG"
+
+CMD_TEMPLATE="$(provider_build_cmd)"
+
+# ---------- 执行 provider(超时 + 输出过滤) ----------
 set +e
-(
-  cd "$WORK_ABS" || exit 4
-  if command -v timeout >/dev/null 2>&1; then
-    # shellcheck disable=SC2086
-    timeout "$TIMEOUT_SECONDS" "$CODEX_BIN" exec $CODEX_ARGS "$PROMPT" 2>&1
-  else
-    # shellcheck disable=SC2086
-    "$CODEX_BIN" exec $CODEX_ARGS "$PROMPT" 2>&1
-  fi
-) | tee -a "$LOG" | bash "$BIN_DIR/filter-output.sh"
-rc=${PIPESTATUS[0]}
+if command -v timeout >/dev/null 2>&1; then
+  # shellcheck disable=SC2002
+  cat "$PROMPT_FILE" | timeout "$TIMEOUT_SECONDS" bash -c "$CMD_TEMPLATE" 2>&1 | tee -a "$LOG" | bash "$BIN_DIR/filter-output.sh"
+else
+  # shellcheck disable=SC2002
+  cat "$PROMPT_FILE" | bash -c "$CMD_TEMPLATE" 2>&1 | tee -a "$LOG" | bash "$BIN_DIR/filter-output.sh"
+fi
+rc=${PIPESTATUS[1]}
 set -e
 
-if [ "$rc" -eq 124 ]; then
-  echo "$AGENT 超时 @ $(date -Iseconds) (timeout=${TIMEOUT_SECONDS}s)" > "$SIG_DIR/${AGENT}_timeout"
-  event "timeout" "Codex 超时 ${TIMEOUT_SECONDS}s"
-  write_state "timeout"
-  exit 124
-elif [ "$rc" -eq 0 ]; then
-  : > "$SIG_DIR/${AGENT}_done"
-  event "done" "Codex 完成"
-  write_state "done-awaiting-review"
-  exit 0
-else
-  echo "$AGENT 失败 rc=$rc @ $(date -Iseconds)" > "$SIG_DIR/${AGENT}_failed"
-  event "failed" "Codex 失败 rc=$rc"
-  write_state "failed"
-  exit "$rc"
-fi
+# Capture post-state
+COMMIT_AFTER="$(cd "$WORK_ABS" && git rev-parse HEAD 2>/dev/null || echo NONE)"
+GIT_STATUS_AFTER_FILE="$(mktemp)"
+(cd "$WORK_ABS" && git status --porcelain 2>/dev/null || true) > "$GIT_STATUS_AFTER_FILE"
+
+export RC="$rc" LOG_FILE="$LOG" COMMIT_BEFORE COMMIT_AFTER GIT_STATUS_BEFORE_FILE GIT_STATUS_AFTER_FILE
+COMPLETION="$(provider_evaluate_completion)"
+rm -f "$PROMPT_FILE" "$GIT_STATUS_BEFORE_FILE" "$GIT_STATUS_AFTER_FILE"
+
+case "$COMPLETION" in
+  done)
+    : > "$SIG_DIR/${AGENT}_done"
+    event "done" "${PROVIDER} 完成 (rc=$rc)"
+    write_state "done-awaiting-review"
+    exit 0
+    ;;
+  timeout)
+    echo "$AGENT 超时 @ $(date -Iseconds) (timeout=${TIMEOUT_SECONDS}s, provider=$PROVIDER)" > "$SIG_DIR/${AGENT}_timeout"
+    event "timeout" "${PROVIDER} 超时 ${TIMEOUT_SECONDS}s"
+    write_state "timeout"
+    exit 124
+    ;;
+  stale)
+    # stale = work landed but signal interrupted; treat as done-awaiting-review per memory R55-R59 / R70 SOP
+    : > "$SIG_DIR/${AGENT}_done"
+    event "done" "${PROVIDER} stale-recovered (rc=$rc, work landed)"
+    write_state "done-awaiting-review"
+    exit 0
+    ;;
+  *)
+    echo "$AGENT 失败 rc=$rc completion=$COMPLETION provider=$PROVIDER @ $(date -Iseconds)" > "$SIG_DIR/${AGENT}_failed"
+    event "failed" "${PROVIDER} 失败 rc=$rc completion=$COMPLETION"
+    write_state "failed"
+    exit "${rc:-1}"
+    ;;
+esac
