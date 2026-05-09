@@ -103,6 +103,17 @@ def state(agent):
         return prev
     return "idle"
 
+def agent_provider(agent):
+    """Resolve provider for given agent: agents.<a>.provider → default_provider → codex."""
+    try:
+        agents_block = config.get("agents") or {}
+        ag = agents_block.get(agent) or {}
+        if ag.get("provider"):
+            return ag["provider"]
+    except Exception:
+        pass
+    return config.get("default_provider") or "codex"
+
 def worker_state(agent):
     workers_path = os.path.join(runtime_dir, "workers.json")
     heartbeat_path = os.path.join(runtime_dir, "heartbeats", f"{agent}.json")
@@ -124,11 +135,21 @@ def worker_state(agent):
         entry = {"status": "stopped"}
     return entry
 
+# Resolve agent dir/stack from new schema (agents.<a>.dir) with v2 fallback (top-level <a>.dir)
+def agent_field(agent, key):
+    try:
+        ab = config.get("agents") or {}
+        if agent in ab and ab[agent].get(key) is not None:
+            return ab[agent].get(key, "")
+    except Exception:
+        pass
+    return (config.get(agent) or {}).get(key, "")
+
 snapshot = {
     "updated_at": now.isoformat(),
     "project_root": root,
-    "backend":  {"dir": config["backend"].get("dir", ""),  "stack": config["backend"].get("stack", ""),  "state": state("backend")},
-    "frontend": {"dir": config["frontend"].get("dir", ""), "stack": config["frontend"].get("stack", ""), "state": state("frontend")},
+    "backend":  {"dir": agent_field("backend", "dir"),  "stack": agent_field("backend", "stack"),  "provider": agent_provider("backend"),  "state": state("backend")},
+    "frontend": {"dir": agent_field("frontend", "dir"), "stack": agent_field("frontend", "stack"), "provider": agent_provider("frontend"), "state": state("frontend")},
     "workers":  {"backend": worker_state("backend"), "frontend": worker_state("frontend")},
     "workflow": config.get("workflow", {}),
     "paths":    config.get("paths", {}),
@@ -140,10 +161,10 @@ PY
 }
 
 event() {
-  local agent="$1" status="$2" message="$3"
-  "$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$agent" "$status" "$message" <<'PY'
+  local agent="$1" status="$2" message="$3" provider="${4:-}"
+  "$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$agent" "$status" "$message" "$provider" <<'PY'
 import json, os, sys, datetime
-path, agent, status, message = sys.argv[1:5]
+path, agent, status, message, provider = sys.argv[1:6]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 record = {
     "time": datetime.datetime.now().astimezone().isoformat(),
@@ -151,6 +172,8 @@ record = {
     "status": status,
     "message": message,
 }
+if provider:
+    record["provider"] = provider
 with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(record, ensure_ascii=False) + "\n")
 PY
