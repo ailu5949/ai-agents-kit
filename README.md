@@ -1,12 +1,25 @@
-# ai-agents-kit (v2)
+# ai-agents-kit (v3)
 
-三 Agent 协作工作流的**可安装工具包**。Claude Code 当总指挥,两个 OpenAI Codex CLI 当前后端执行者。v2 在 v1 基础上吸收了 ai-multi-agents 项目里已落地的高价值能力(Memory 三层、JSON state、JSONL event、PowerShell 入口),保持原有的 Karpathy 6 项审查 rubric 和稳健的 jq 幂等合并不变。
+三 Agent 协作工作流的**可安装工具包**。Claude Code 当总指挥,前后端编码 agent 可灵活选 Codex / Claude Code(Gemini 留扩展点)。v3 在 v2 基础上引入 multi-provider 抽象 + Pre-Human Decision Gate(主 Claude 真打验证关卡)+ Handover 机制(provider 切换接续)。
 
 ## 它是什么
 
 这个目录(`C:\Users\mi\ai-agents-kit\`)是**工具包本身**,类似 `create-react-app` 之类的脚手架。它**不是**你的项目代码,放在哪都行,只要你的项目能访问它就可以。
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
+
+## v3 主要变化(2026-05-10)
+
+- **Provider 抽象**: `templates/.aiagents/bin/providers/{codex,claude}.sh` adapters,各实现 `provider_build_cmd` + `provider_evaluate_completion`(Gemini stub 留扩展点)
+- **Per-agent default + per-dispatch override**: `agents.{backend,frontend}.provider` 默认 + `/dispatch-backend --provider claude --timeout 3600` 临时切
+- **Pre-Human Decision Gate**: 三段式工作流 `done-awaiting-review → claude-verifying → ready-for-human`。主 Claude 必须**真打**跑测试 + curl smoke + E2E 全过才让 Lane 决策
+- **Handover 机制**: claude 跑一半 token 不够切 codex,`runtime/<agent>-handover.md` 把"前一家做到哪儿"传给新 provider,**接续不重做**。`/retry-other-provider <agent>` 自动生成骨架
+- **编码 agent 上下文隔离**: 子目录 `${BACKEND_DIR}/CLAUDE.md` + 主 `settings.json` `permissions.deny Edit/Write` 业务目录(主 Claude 不直接改业务码硬约束)
+- **Stdin prompt delivery**: 突破 Codex 32KB args 上限
+- **应急 bypass**: `/release-without-verify <agent> "<reason>"` 显式破例(自动写 memory/bugs.md 留痕)
+- **设计文档**: [docs/designs/2026-05-09-multi-provider-design.md](docs/designs/2026-05-09-multi-provider-design.md)
+
+详细变化请看上述 spec § 7-§ 10。
 
 ## v2 主要变化
 
@@ -53,6 +66,24 @@ pwsh C:\Users\mi\ai-agents-kit\install.ps1 -MigrateV1
 ```
 
 迁移脚本会平移 specs / signals / logs,升级 CLAUDE.md 的 v1 marker → v2,备份旧 bin/。
+
+### 从 v2 升级到 v3(2026-05-10)
+
+直接重跑 `install.sh`(v3 自动检测 v2 config.json `codex.*` 块 → 迁移到 `providers.codex.*` + 注入 `providers.claude` 默认值,旧 `codex.args` 值**自动保留**):
+
+```bash
+cd /d/dev/ai/workspace/your-v2-project
+CODEX_ARGS="--dangerously-bypass-approvals-and-sandbox" bash /c/Users/mi/ai-agents-kit/install.sh --yes
+```
+
+**注意**: install.sh fresh path 默认 CODEX_ARGS 是 `--full-auto`(Windows sandbox 卡死高风险)。已有 v2 config.json 的项目走 migration path 没问题(保留旧值);全新装务必显式 `CODEX_ARGS=--dangerously-bypass-approvals-and-sandbox`。
+
+升级后:
+- `agents.{backend,frontend}.provider` 默认 `codex`(行为零变化)
+- 想切 → `/dispatch-backend --provider claude`
+- 验证: `bash .aiagents/bin/agentctl.sh status` 输出含 `provider:` 列
+
+**install.ps1 v3 mirror 推迟到 v3.1**:PowerShell 用户暂用 Git Bash 跑 install.sh。升级后 `agentctl.ps1 -Provider <name>` 已支持(Task 3.3)。
 
 ## 两种启动方式(共享一套配置)
 
