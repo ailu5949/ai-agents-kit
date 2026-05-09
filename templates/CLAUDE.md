@@ -100,6 +100,71 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 
 **判断通过 Stop hook 是否已触发**:如果你上一条消息的开头有一段 `[Stop hook] 检测到 Codex 状态变化: - ✅ backend 开发完成,请立即审查...` 那就是 Stop hook 注入了。没有这段 = 没触发 = 不准审查。
 
+## ⛔ provider 同源审查纪律 (multi-provider 后)
+
+历史教训: Codex 与主 Claude 异构,审查无"同根偏向"风险。
+multi-provider 后编码 agent 可选 Claude Code(同模型不同会话),你和它对你而言仍是"外部 agent",规则不变:
+
+- ❌ 严禁因"反正都是 Claude"放松审查 — Karpathy 6 项与 Codex 派单时同等严格
+- ❌ 严禁用"它应该是这样想的"代替"git diff 实际证据"
+- ❌ 严禁"顺手帮一下"自己改代码 — 编码 agent 失败仍走 04 修复 → 重派,不论 provider
+- ✅ 你只看 state.json + events.jsonl + git diff + log + commit message — 不能假设编码 agent 的 thinking
+- ✅ 审查报告必须写明 `**Provider**: codex | claude` 字段(由你写,不依赖 events.jsonl)
+
+## ⛔ Pre-Human Decision Gate (人工决策前必经关卡)
+
+**三段式工作流**:
+
+```
+编码 agent 完成 → state=done-awaiting-review
+       ↓ 主 Claude 走 Karpathy 6 项审查
+state=claude-verifying ← 主 Claude **真打**跑测试 + curl smoke + E2E
+       ↓ 全过
+state=ready-for-human ← Lane 拍板:收下 / 打回 / 推迟
+```
+
+**done-awaiting-review 不再直接交人工**。审查通过后必须:
+
+1. 写 `state=claude-verifying`(主 Claude 用 Bash 直接编辑 `.aiagents/state/current.json`)
+2. 跑下表所有项(命令从 `.aiagents/config.json` `agents.<a>.test_cmd / lint_cmd / smoke_endpoints` 读)
+3. 任一失败 → 04-Bug修复 → 派编码 agent → 回起点
+4. 全过 → 写 `state=ready-for-human` + 通知 Lane
+
+**验证清单**:
+
+| 类别 | 命令 | 通过判据 |
+|---|---|---|
+| 后端测试 | `cd $BACKEND_DIR && $TEST_CMD` | exit 0 + 测试数 ≥ spec 验收 + 无 regression |
+| 后端 lint | `cd $BACKEND_DIR && $LINT_CMD` | exit 0 |
+| 后端 import | `$IMPORT_CHECK` | "OK" + 无 ImportError |
+| 接口 smoke | `curl -fsS $ENDPOINT` × N | 全 200 + 含 spec 要求字段 |
+| 真 E2E | `$E2E_CMD`(项目自定义) | exit 0 + 行数验证 + 数据形状 |
+| 前端构建 | `cd $FRONTEND_DIR && $BUILD_CMD` | exit 0 + dist 产物存在 |
+| 前端 lint | `cd $FRONTEND_DIR && $LINT_CMD` | exit 0 |
+| 前端 file:// smoke | `agents.frontend.smoke_grep` 各项 | 全部命中预期值 |
+
+**任一 stdout/stderr 含** `error|fail|exception|traceback|sandbox|forbidden|denied|connection refused`(case-insensitive)→ 主 Claude 必须解释,不能略过。
+
+**审查报告必含 § 真打验证段**(模板):
+
+```markdown
+### § 真打验证 (Pre-Human Decision Gate)
+
+| 验证项 | 命令 | exit | 输出尾 5 行 | 通过 |
+|---|---|---|---|---|
+| BE 测试 | `pytest -q` | 0 | `... 86 passed in 12.3s` | ✅ |
+| BE lint | `ruff check .` | 0 | `All checks passed!` | ✅ |
+| ... | ... | ... | ... | ... |
+
+**全部 ✅ → state 推进 ready-for-human**
+```
+
+**报告未含此段 = 报告无效**(主 Claude 不能"忘了跑")。
+
+**应急 bypass**: Lane 显式 `/release-without-verify <agent> "<reason>"` 可绕过 — 但每次破例自动写入 `bugs.md` 留痕。
+
+**主 Claude 运维边界**: 跑测试 / 跑接口 / kill 进程 / 起 server **可做**(运维操作);Edit / Write 业务代码 **严禁**(由 settings.json deny 强制)。
+
 ## 代码审查 Rubric — Karpathy 6 项
 
 审查 Codex 交付物时**必须**逐项走完。未过项直接判失败。
