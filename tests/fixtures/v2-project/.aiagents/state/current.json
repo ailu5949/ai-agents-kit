@@ -1,0 +1,5 @@
+{
+  "updated_at": "2026-05-09T00:00:00+08:00",
+  "backend": { "dir": "stock-be", "state": "idle" },
+  "frontend": { "dir": "stock-fe", "state": "idle" }
+}

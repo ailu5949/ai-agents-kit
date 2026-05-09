@@ -1,0 +1,19 @@
+{
+  "backend":  { "dir": "stock-be", "stack": "FastAPI" },
+  "frontend": { "dir": "stock-fe", "stack": "React" },
+  "codex":    {
+    "bin": "codex",
+    "args": "--dangerously-bypass-approvals-and-sandbox",
+    "timeout_seconds": 1800
+  },
+  "workflow": { "max_retry": 3 },
+  "paths": {
+    "signals": ".aiagents/signals",
+    "logs": ".aiagents/logs",
+    "state": ".aiagents/state",
+    "memory": ".aiagents/memory",
+    "specs": "docs/ai-agents/specs",
+    "reviews": "docs/ai-agents/reviews",
+    "retrospectives": "docs/ai-agents/retrospectives"
+  }
+}
