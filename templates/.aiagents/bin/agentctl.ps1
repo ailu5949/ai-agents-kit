@@ -225,7 +225,7 @@ function Consume-Signal([string]$Path) {
 
 function Wait-Agent([string]$Agent, [int]$MaxSeconds) {
   $start = Get-Date
-  Write-Host "等待 Codex-$Agent 完成信号(最长 ${MaxSeconds}s)..."
+  Write-Host "⏳ 等待 Codex-$Agent 完成信号(最长 ${MaxSeconds}s)..."
   while ($true) {
     $elapsed = [int]((Get-Date) - $start).TotalSeconds
     foreach ($suffix in @("done", "failed", "timeout")) {
@@ -235,15 +235,15 @@ function Wait-Agent([string]$Agent, [int]$MaxSeconds) {
         if ($suffix -ne "done") { $reason = (Get-Content -Raw -Encoding UTF8 $path) }
         Consume-Signal $path
         Append-Event $Agent $suffix "检测到 ${Agent}_$suffix" @{ elapsed_seconds = $elapsed; reason = $reason }
-        if ($suffix -eq "done") { Write-Host ""; Write-Host "$Agent 完成"; exit 0 }
-        if ($suffix -eq "failed") { Write-Host ""; Write-Host "FAILED: $reason"; exit 1 }
-        if ($suffix -eq "timeout") { Write-Host ""; Write-Host "TIMEOUT: $reason"; exit 2 }
+        if ($suffix -eq "done") { Write-Host ""; Write-Host "✅ $Agent 完成"; exit 0 }
+        if ($suffix -eq "failed") { Write-Host ""; Write-Host "❌ FAILED: $reason"; exit 1 }
+        if ($suffix -eq "timeout") { Write-Host ""; Write-Host "⏰ TIMEOUT: $reason"; exit 2 }
       }
     }
     if ($elapsed -ge $MaxSeconds) {
       Append-Event $Agent "wait-expired" "等待超时但未收到信号" @{ elapsed_seconds = $elapsed }
       Write-Host ""
-      Write-Host "等待 ${MaxSeconds}s 仍无信号 — Codex 可能仍在运行(Stop hook 兜底)"
+      Write-Host "⚠️ 等待 ${MaxSeconds}s 仍无信号 — Codex 可能仍在运行(Stop hook 兜底)"
       exit 3
     }
     Start-Sleep -Seconds 3
@@ -298,12 +298,12 @@ function Watch-Agent([string]$Agent) {
     # Change 4: Pass mode to Invoke-CodexTask; agent-runner consumes the signal file itself
     if (Test-Path $taskSignal) {
       Write-Host ""
-      Write-Host "$(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 新任务"
+      Write-Host "🔔 $(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 新任务"
       Invoke-CodexTask $Agent "task"
     }
     if (Test-Path $bugSignal) {
       Write-Host ""
-      Write-Host "$(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 修复任务"
+      Write-Host "🔧 $(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 修复任务"
       Invoke-CodexTask $Agent "bugfix"
     }
     Start-Sleep -Seconds 2
