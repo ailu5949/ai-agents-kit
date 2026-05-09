@@ -11,8 +11,13 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 
 ---
 
+**用法**:
+- `/dispatch-frontend` — 用 agent 默认 provider
+- `/dispatch-frontend --provider claude` — 这次用 Claude Code
+- `/dispatch-frontend --provider codex --timeout 3600` — 切 codex + 自定义超时
+
 **第一步 — 派发**:
-`bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch frontend`
+`bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch $ARGUMENTS frontend`
 
 ---
 

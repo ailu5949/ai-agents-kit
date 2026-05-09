@@ -11,10 +11,15 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 
 ---
 
-**第一步 — 派发**:
-`bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch backend`
+**用法**:
+- `/dispatch-backend` — 用 agent 默认 provider
+- `/dispatch-backend --provider claude` — 这次用 Claude Code
+- `/dispatch-backend --provider codex --timeout 3600` — 切 codex + 自定义超时
 
-如果命令返回非零,把错误原样展示给用户并终止。
+**第一步 — 派发**:
+`bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch $ARGUMENTS backend`
+
+如果命令返回非零(常见: `--provider X` 中 X 不在 config.json `providers` 块里),把错误原样展示给用户并终止。
 
 ---
 

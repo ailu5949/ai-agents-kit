@@ -10,8 +10,13 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 
 ---
 
+**用法**:
+- `/bugfix-backend` — 用 agent 默认 provider
+- `/bugfix-backend --provider claude` — 这次用 Claude Code 修
+- `/bugfix-backend --provider codex --timeout 3600` — 切 codex + 自定义超时
+
 **第一步 — 派发修复**:
-`bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch bugfix-backend`
+`bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch $ARGUMENTS bugfix-backend`
 
 ---
 
