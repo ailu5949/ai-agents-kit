@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ai-agents-kit v2 安装器: 把工具包幂等地装到目标项目。
+# ai-agents-kit v3 安装器: 把工具包幂等地装到目标项目。
 #
 # 用法:
 #   cd /path/to/your/project
@@ -45,7 +45,7 @@ for arg in "$@"; do
 done
 
 echo "==========================================="
-echo "  ai-agents-kit v2 installer"
+echo "  ai-agents-kit v3 installer"
 echo "  kit   : $KIT_ROOT"
 echo "  target: $PROJECT_ROOT"
 echo "==========================================="
@@ -205,17 +205,20 @@ CODEX_BIN_DEFAULT="${CODEX_BIN:-codex}"
 CODEX_ARGS_DEFAULT="${CODEX_ARGS:---full-auto}"
 CODEX_TIMEOUT_DEFAULT="${CODEX_TIMEOUT:-1800}"
 
-# ---------- 1. 创建目录骨架(v2 布局) ----------
+# ---------- 1. 创建目录骨架(v3 布局) ----------
 echo
-echo "📁 创建目录骨架(v2)..."
+echo "📁 创建目录骨架(v3)..."
 mkdir -p \
   "$PROJECT_ROOT/.claude/commands" \
   "$PROJECT_ROOT/.claude/hooks" \
   "$PROJECT_ROOT/.aiagents/bin" \
+  "$PROJECT_ROOT/.aiagents/bin/providers" \
   "$PROJECT_ROOT/.aiagents/signals" \
   "$PROJECT_ROOT/.aiagents/logs" \
   "$PROJECT_ROOT/.aiagents/state" \
   "$PROJECT_ROOT/.aiagents/runtime/heartbeats" \
+  "$PROJECT_ROOT/.aiagents/runtime/archive" \
+  "$PROJECT_ROOT/.aiagents/prompts" \
   "$PROJECT_ROOT/.aiagents/memory/global" \
   "$PROJECT_ROOT/.aiagents/memory/projects" \
   "$PROJECT_ROOT/.aiagents/memory/ideas" \
@@ -233,6 +236,31 @@ for f in "$TEMPLATES/.aiagents/bin/"*; do
     *.sh) chmod +x "$PROJECT_ROOT/.aiagents/bin/$fname" ;;
   esac
 done
+
+# providers/ subdir (v3 multi-provider)
+if [ -d "$TEMPLATES/.aiagents/bin/providers" ]; then
+  mkdir -p "$PROJECT_ROOT/.aiagents/bin/providers"
+  for f in "$TEMPLATES/.aiagents/bin/providers/"*; do
+    [ -f "$f" ] || continue
+    fname="$(basename "$f")"
+    cp -f "$f" "$PROJECT_ROOT/.aiagents/bin/providers/$fname"
+    case "$fname" in
+      *.sh) chmod +x "$PROJECT_ROOT/.aiagents/bin/providers/$fname" ;;
+    esac
+  done
+  echo "  已安装 .aiagents/bin/providers/ ($(ls -1 "$PROJECT_ROOT/.aiagents/bin/providers/" | wc -l) 个 adapter)"
+fi
+
+# ---------- 2.5. 复制 .aiagents/prompts/(v3 cross-provider preamble) ----------
+if [ -d "$TEMPLATES/.aiagents/prompts" ]; then
+  mkdir -p "$PROJECT_ROOT/.aiagents/prompts"
+  for f in "$TEMPLATES/.aiagents/prompts/"*.md; do
+    [ -f "$f" ] || continue
+    fname="$(basename "$f")"
+    cp -f "$f" "$PROJECT_ROOT/.aiagents/prompts/$fname"
+  done
+  echo "  已安装 .aiagents/prompts/dispatch-preamble.md"
+fi
 
 # ---------- 3. 复制 memory 模板(已存在不覆盖) ----------
 echo "🧠 安装 memory 模板(保留已有内容)..."
@@ -298,10 +326,121 @@ CODEX_TIMEOUT=$CODEX_TIMEOUT_DEFAULT
 EOF
 fi
 
-# ---------- 6. 生成 .aiagents/config.json(JSON 真值源) ----------
-echo "🧩 生成 .aiagents/config.json..."
+# ---------- 6. 生成 .aiagents/config.json(v3 JSON 真值源) ----------
 CFG_JSON="$PROJECT_ROOT/.aiagents/config.json"
-if command -v jq >/dev/null 2>&1; then
+
+write_v3_config() {
+  local cfg_path="$1"
+  "$_python_found" - \
+      "$cfg_path" \
+      "$BACKEND_DIR" "$FRONTEND_DIR" \
+      "$BACKEND_STACK" "$FRONTEND_STACK" \
+      "$BACKEND_TEST_CMD" "$FRONTEND_TEST_CMD" \
+      "$BACKEND_LINT_CMD" "$FRONTEND_LINT_CMD" \
+      "$CODEX_BIN_DEFAULT" "$CODEX_ARGS_DEFAULT" "$CODEX_TIMEOUT_DEFAULT" <<'PY'
+import json, os, sys
+path, bd, fd, bs, fs, btc, ftc, blc, flc, cb, ca, cto = sys.argv[1:13]
+
+# Detect existing config
+existing = None
+if os.path.exists(path):
+    try:
+        existing = json.load(open(path, encoding="utf-8"))
+    except Exception:
+        existing = None
+
+# v3 already -> skip (preserve customizations)
+if existing and existing.get("providers"):
+    print("[install] config.json is already v3 (has providers block) -- skipping rewrite", file=sys.stderr)
+    sys.exit(0)
+
+# v2 detected -> migrate
+if existing and existing.get("codex"):
+    print("[install] detected v2 config.json -- auto-migrating codex.* -> providers.codex.*", file=sys.stderr)
+    new_cfg = {
+        "version": "3.0.0",
+        "namespace": "ai-agents-kit",
+        "default_provider": "codex",
+        "agents": {
+            "backend":  {
+                "dir":   existing.get("backend", {}).get("dir", bd),
+                "stack": existing.get("backend", {}).get("stack", bs),
+                "provider": "codex",
+                "test_cmd": existing.get("backend", {}).get("test_cmd", btc),
+                "lint_cmd": existing.get("backend", {}).get("lint_cmd", blc),
+            },
+            "frontend": {
+                "dir":   existing.get("frontend", {}).get("dir", fd),
+                "stack": existing.get("frontend", {}).get("stack", fs),
+                "provider": "codex",
+                "test_cmd": existing.get("frontend", {}).get("test_cmd", ftc),
+                "lint_cmd": existing.get("frontend", {}).get("lint_cmd", flc),
+            },
+        },
+        "providers": {
+            "codex":  {
+                "bin":  existing.get("codex", {}).get("bin", cb),
+                "args": existing.get("codex", {}).get("args", ca),
+                "timeout": int(existing.get("codex", {}).get("timeout_seconds", cto)),
+                "subcommand": "exec",
+                "stdin_supported": True,
+            },
+            "claude": {
+                "bin": "claude",
+                "args": "--dangerously-skip-permissions",
+                "timeout": 2400,
+                "subcommand": "-p",
+                "stdin_supported": True,
+            },
+        },
+        "workflow": existing.get("workflow", {"max_retry": 3, "require_review_before_frontend": True, "human_override_after_retry": 3}),
+        "paths": existing.get("paths", {}),
+    }
+else:
+    # Fresh
+    print("[install] fresh v3 config.json", file=sys.stderr)
+    new_cfg = {
+        "version": "3.0.0",
+        "namespace": "ai-agents-kit",
+        "default_provider": "codex",
+        "agents": {
+            "backend":  {"dir": bd, "stack": bs, "provider": "codex", "test_cmd": btc, "lint_cmd": blc},
+            "frontend": {"dir": fd, "stack": fs, "provider": "codex", "test_cmd": ftc, "lint_cmd": flc},
+        },
+        "providers": {
+            "codex":  {"bin": cb, "args": ca, "timeout": int(cto), "subcommand": "exec", "stdin_supported": True},
+            "claude": {"bin": "claude", "args": "--dangerously-skip-permissions", "timeout": 2400, "subcommand": "-p", "stdin_supported": True},
+        },
+        "workflow": {"max_retry": 3, "require_review_before_frontend": True, "human_override_after_retry": 3},
+        "paths": {},
+    }
+
+# Ensure paths defaults (always set; existing may have partial)
+default_paths = {
+    "specs": "docs/ai-agents/specs",
+    "reviews": "docs/ai-agents/reviews",
+    "retrospectives": "docs/ai-agents/retrospectives",
+    "signals": ".aiagents/signals",
+    "logs": ".aiagents/logs",
+    "state": ".aiagents/state",
+    "memory": ".aiagents/memory",
+    "prompts": ".aiagents/prompts",
+    "runtime": ".aiagents/runtime",
+}
+for k, v in default_paths.items():
+    new_cfg["paths"].setdefault(k, v)
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+}
+
+echo "🧩 生成 .aiagents/config.json (v3 schema)..."
+if [ -n "$_python_found" ]; then
+  write_v3_config "$CFG_JSON"
+elif command -v jq >/dev/null 2>&1; then
+  # jq-only fallback: always writes fresh v3 (no migration support without python)
   jq -n \
     --arg bd  "$BACKEND_DIR"          --arg fd  "$FRONTEND_DIR" \
     --arg bs  "$BACKEND_STACK"        --arg fs  "$FRONTEND_STACK" \
@@ -310,55 +449,45 @@ if command -v jq >/dev/null 2>&1; then
     --arg cb  "$CODEX_BIN_DEFAULT"    --arg ca  "$CODEX_ARGS_DEFAULT" \
     --argjson cto "$CODEX_TIMEOUT_DEFAULT" \
     '{
-       version: "2.0.0",
+       version: "3.0.0",
        namespace: "ai-agents-kit",
-       backend:  {dir: $bd, stack: $bs, test_cmd: $btc, lint_cmd: $blc},
-       frontend: {dir: $fd, stack: $fs, test_cmd: $ftc, lint_cmd: $flc},
-       codex:    {bin: $cb, args: $ca, timeout_seconds: $cto},
+       default_provider: "codex",
+       agents: {
+         backend:  {dir: $bd, stack: $bs, provider: "codex", test_cmd: $btc, lint_cmd: $blc},
+         frontend: {dir: $fd, stack: $fs, provider: "codex", test_cmd: $ftc, lint_cmd: $flc}
+       },
+       providers: {
+         codex:  {bin: $cb, args: $ca, timeout: $cto, subcommand: "exec", stdin_supported: true},
+         claude: {bin: "claude", args: "--dangerously-skip-permissions", timeout: 2400, subcommand: "-p", stdin_supported: true}
+       },
        workflow: {max_retry: 3, require_review_before_frontend: true, human_override_after_retry: 3},
-       paths:    {
+       paths: {
          specs: "docs/ai-agents/specs",
          reviews: "docs/ai-agents/reviews",
          retrospectives: "docs/ai-agents/retrospectives",
          signals: ".aiagents/signals",
          logs: ".aiagents/logs",
          state: ".aiagents/state",
-         memory: ".aiagents/memory"
+         memory: ".aiagents/memory",
+         prompts: ".aiagents/prompts",
+         runtime: ".aiagents/runtime"
        }
      }' > "$CFG_JSON"
 else
-  "$_python_found" - "$CFG_JSON" "$BACKEND_DIR" "$FRONTEND_DIR" \
-                    "$BACKEND_STACK" "$FRONTEND_STACK" \
-                    "$BACKEND_TEST_CMD" "$FRONTEND_TEST_CMD" \
-                    "$BACKEND_LINT_CMD" "$FRONTEND_LINT_CMD" \
-                    "$CODEX_BIN_DEFAULT" "$CODEX_ARGS_DEFAULT" "$CODEX_TIMEOUT_DEFAULT" <<'PY'
-import json, sys
-path, bd, fd, bs, fs, btc, ftc, blc, flc, cb, ca, cto = sys.argv[1:13]
-config = {
-  "version": "2.0.0",
-  "namespace": "ai-agents-kit",
-  "backend":  {"dir": bd, "stack": bs, "test_cmd": btc, "lint_cmd": blc},
-  "frontend": {"dir": fd, "stack": fs, "test_cmd": ftc, "lint_cmd": flc},
-  "codex":    {"bin": cb, "args": ca, "timeout_seconds": int(cto)},
-  "workflow": {"max_retry": 3, "require_review_before_frontend": True, "human_override_after_retry": 3},
-  "paths": {
-    "specs": "docs/ai-agents/specs",
-    "reviews": "docs/ai-agents/reviews",
-    "retrospectives": "docs/ai-agents/retrospectives",
-    "signals": ".aiagents/signals",
-    "logs": ".aiagents/logs",
-    "state": ".aiagents/state",
-    "memory": ".aiagents/memory",
-  }
-}
-open(path, "w", encoding="utf-8").write(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
-PY
+  echo "❌ 需要 python 或 jq 生成 config.json"; exit 1
 fi
 
-# ---------- 7. settings.json(jq 幂等合并) ----------
+# ---------- 7. settings.json(jq 幂等合并 + placeholder 替换) ----------
 SETTINGS="$PROJECT_ROOT/.claude/settings.json"
 TEMPLATE_SETTINGS="$TEMPLATES/.claude/settings.json"
 echo "🧩 合并 .claude/settings.json..."
+
+# Render template with real dir values (substitutes ${BACKEND_DIR} / ${FRONTEND_DIR} placeholders)
+TEMPLATE_SETTINGS_RENDERED="$(mktemp)"
+sed -e "s|\${BACKEND_DIR}|$BACKEND_DIR|g" \
+    -e "s|\${FRONTEND_DIR}|$FRONTEND_DIR|g" \
+    "$TEMPLATE_SETTINGS" > "$TEMPLATE_SETTINGS_RENDERED"
+
 if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
   tmp="$(mktemp)"
   jq -s '
@@ -366,21 +495,24 @@ if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
     $existing
     | (.hooks //= {})
     | (.hooks.Stop //= [])
-    # 移除 v1 stop-notify.sh 的旧 Stop hook,然后追加 v2 的(避免重复)
+    # 移除 v1 stop-notify.sh 的旧 Stop hook,然后追加 v2/v3 的(避免重复)
     | .hooks.Stop |= [.[] | select(.hooks[0].command | contains(".claude/hooks/stop-notify.sh") | not)]
     | .hooks.Stop |= (. + ($kit.hooks.Stop // []) | unique_by(.hooks[0].command))
     | (.permissions //= {})
     | (.permissions.allow //= [])
     | .permissions.allow |= (. + ($kit.permissions.allow // []) | unique)
-  ' "$SETTINGS" "$TEMPLATE_SETTINGS" > "$tmp"
+    | (.permissions.deny //= [])
+    | .permissions.deny |= (. + ($kit.permissions.deny // []) | unique)
+  ' "$SETTINGS" "$TEMPLATE_SETTINGS_RENDERED" > "$tmp"
   mv "$tmp" "$SETTINGS"
-  echo "  已合并 Stop hook 与 permissions.allow(并清理 v1 hook)"
+  echo "  已合并 Stop hook、permissions.allow 与 permissions.deny(并清理 v1 hook)"
 elif [ -f "$SETTINGS" ]; then
   echo "  ⚠️  jq 不可用,settings.json 已存在 — 请手动检查 hooks.Stop 是否指向 .aiagents/bin/stop-notify.sh"
 else
-  cp "$TEMPLATE_SETTINGS" "$SETTINGS"
-  echo "  新建"
+  cp "$TEMPLATE_SETTINGS_RENDERED" "$SETTINGS"
+  echo "  新建(含 deny 规则替换)"
 fi
+rm -f "$TEMPLATE_SETTINGS_RENDERED"
 
 # ---------- 8. CLAUDE.md(v1→v2 自动升级) ----------
 CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
@@ -428,6 +560,47 @@ else
   echo "$rendered" > "$CLAUDE_MD"
   echo "  已新建 CLAUDE.md"
 fi
+
+# ---------- 8.5. backend/frontend 编码 agent CLAUDE.md ----------
+deploy_agent_claude() {
+  local agent="$1" agent_dir="$2"
+  local src="$TEMPLATES/${agent}-CLAUDE.md"
+  [ -f "$src" ] || return 0
+  [ -n "$agent_dir" ] || return 0
+  # Resolve to absolute path under project root
+  local abs_dir
+  case "$agent_dir" in
+    /*|[A-Za-z]:*) abs_dir="$agent_dir" ;;
+    *) abs_dir="$PROJECT_ROOT/$agent_dir" ;;
+  esac
+  [ -d "$abs_dir" ] || { echo "  ⚠️  ${agent} 工作目录不存在: $abs_dir,跳过 CLAUDE.md 部署"; return 0; }
+  local target="$abs_dir/CLAUDE.md"
+  # Substitute placeholders
+  local rendered
+  rendered="$(sed \
+    -e "s|\${BACKEND_DIR}|$BACKEND_DIR|g" \
+    -e "s|\${FRONTEND_DIR}|$FRONTEND_DIR|g" \
+    "$src")"
+  if [ -f "$target" ]; then
+    if grep -q "ai-agents-kit:agent-claude-md" "$target" 2>/dev/null; then
+      # Already managed by kit; rewrite
+      echo "$rendered" > "$target"
+      echo "  已更新 $target (kit-managed)"
+    else
+      # User has own CLAUDE.md -- don't overwrite
+      bak="$target.kit-suggest.$(date +%s)"
+      echo "$rendered" > "$bak"
+      echo "  ⚠️  $target 已存在(非 kit-managed),建议手工合并 → $(basename "$bak")"
+    fi
+  else
+    echo "$rendered" > "$target"
+    echo "  已部署 $target"
+  fi
+}
+
+echo "📝 部署编码 agent 子目录 CLAUDE.md..."
+deploy_agent_claude backend "$BACKEND_DIR"
+deploy_agent_claude frontend "$FRONTEND_DIR"
 
 # ---------- 9. start-agents.sh ----------
 START="$PROJECT_ROOT/start-agents.sh"
@@ -582,9 +755,9 @@ fi
 echo
 echo "==========================================="
 if [ $MIGRATE_V1 -eq 1 ]; then
-  echo "✅ v1 → v2 迁移完成"
+  echo "✅ v1 → v3 迁移完成"
 else
-  echo "✅ 安装完成"
+  echo "✅ 安装完成 (v3)"
 fi
 echo "==========================================="
 echo
