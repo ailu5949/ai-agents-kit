@@ -108,9 +108,9 @@ fi
 # ---------- state / event 工具 ----------
 write_state() {
   local running_state="$1"
-  "$PYTHON_BIN" - "$ROOT" "$AGENT" "$running_state" "$RUNTIME_DIR" "$STATE_DIR" "$CONFIG_JSON" "$CONFIG_CONF" <<'PY'
+  "$PYTHON_BIN" - "$ROOT" "$AGENT" "$running_state" "$RUNTIME_DIR" "$STATE_DIR" "$CONFIG_JSON" "$CONFIG_CONF" "${PROVIDER:-}" <<'PY'
 import json, sys, os, datetime, re
-root, agent, running_state, runtime_dir, state_dir, config_json, config_conf = sys.argv[1:8]
+root, agent, running_state, runtime_dir, state_dir, config_json, config_conf, runtime_provider = sys.argv[1:9]
 now = datetime.datetime.now().astimezone()
 
 config = None
@@ -140,6 +140,21 @@ if config is None:
               "workflow": {}, "paths": {"signals": ".aiagents/signals"}}
 
 sig = os.path.join(root, config["paths"].get("signals", ".aiagents/signals"))
+
+# Read existing state to preserve special states (claude-verifying / ready-for-human)
+existing_state = {}
+existing_path = os.path.join(state_dir, "current.json")
+if os.path.exists(existing_path):
+    try:
+        existing_data = json.load(open(existing_path, encoding="utf-8"))
+        for ag in ("backend", "frontend"):
+            if ag in existing_data:
+                existing_state[ag] = existing_data[ag].get("state", "idle")
+    except Exception:
+        pass
+
+PRESERVED_STATES = {"claude-verifying", "ready-for-human"}
+
 def state(name):
     if name == agent:
         return running_state
@@ -152,7 +167,32 @@ def state(name):
     ]:
         if os.path.exists(os.path.join(sig, fn)):
             return value
+    prev = existing_state.get(name, "idle")
+    if prev in PRESERVED_STATES:
+        return prev
     return "idle"
+
+def agent_provider(name):
+    # Running agent uses the runtime-resolved provider (may differ from config default if overridden)
+    if name == agent and runtime_provider:
+        return runtime_provider
+    try:
+        ab = config.get("agents") or {}
+        ag = ab.get(name) or {}
+        if ag.get("provider"):
+            return ag["provider"]
+    except Exception:
+        pass
+    return config.get("default_provider") or "codex"
+
+def agent_field(name, key):
+    try:
+        ab = config.get("agents") or {}
+        if name in ab and ab[name].get(key) is not None:
+            return ab[name].get(key, "")
+    except Exception:
+        pass
+    return (config.get(name) or {}).get(key, "")
 
 def worker_state(name):
     workers_path = os.path.join(runtime_dir, "workers.json")
@@ -178,8 +218,8 @@ def worker_state(name):
 snapshot = {
     "updated_at": now.isoformat(),
     "project_root": root,
-    "backend":  {"dir": config["backend"].get("dir", ""),  "stack": config["backend"].get("stack", ""),  "state": state("backend")},
-    "frontend": {"dir": config["frontend"].get("dir", ""), "stack": config["frontend"].get("stack", ""), "state": state("frontend")},
+    "backend":  {"dir": agent_field("backend", "dir"),  "stack": agent_field("backend", "stack"),  "provider": agent_provider("backend"),  "state": state("backend")},
+    "frontend": {"dir": agent_field("frontend", "dir"), "stack": agent_field("frontend", "stack"), "provider": agent_provider("frontend"), "state": state("frontend")},
     "workers":  {"backend": worker_state("backend"), "frontend": worker_state("frontend")},
     "workflow": config.get("workflow", {}),
     "paths":    config.get("paths", {}),
