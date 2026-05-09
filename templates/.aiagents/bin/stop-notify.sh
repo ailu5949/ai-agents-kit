@@ -45,6 +45,26 @@ for kind in backend frontend; do
   fi
 done
 
+# 检测 state.json 中的 ready-for-human 状态(由 verify gate 通过 / release-without-verify 触发)
+# claude-verifying 不触发 hook(那是主 Claude 自己正在跑 verify,不要打断)
+if [ -f "$STATE_FILE" ]; then
+  for kind in backend frontend; do
+    cur_state="$(
+      python -c "
+import json, sys
+try:
+    d = json.load(open(r'$STATE_FILE', encoding='utf-8'))
+    print((d.get('$kind') or {}).get('state') or '')
+except Exception:
+    pass
+" 2>/dev/null || true
+    )"
+    if [ "$cur_state" = "ready-for-human" ]; then
+      events+="- 🟢 ${kind} verify 全过,等待 Lane 决策(收下 / 打回 / 推迟)"$'\n'
+    fi
+  done
+fi
+
 [ -z "$events" ] && exit 0
 
 # 摘录当前 state(若存在)给 Claude 一个权威状态参考
