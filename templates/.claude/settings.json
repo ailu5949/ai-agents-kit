@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.aiagents/bin/stop-notify.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bash .aiagents/bin/agentctl.sh:*)",
+      "Bash(bash *.aiagents/bin/agentctl.sh:*)",
+      "Bash(bash .aiagents/bin/agent-runner.sh:*)",
+      "Bash(bash *.aiagents/bin/agent-runner.sh:*)",
+      "Bash(bash .aiagents/bin/watch-agent.sh:*)",
+      "Bash(bash *.aiagents/bin/watch-agent.sh:*)",
+      "Bash(bash .aiagents/bin/stop-notify.sh:*)",
+      "Bash(bash *.aiagents/bin/stop-notify.sh:*)",
+      "Bash(bash .aiagents/bin/wait-signal.sh:*)",
+      "Bash(bash *.aiagents/bin/wait-signal.sh:*)",
+      "Bash(pwsh .aiagents/bin/agentctl.ps1:*)",
+      "Bash(pwsh *.aiagents/bin/agentctl.ps1:*)",
+      "Bash(pwsh .aiagents/bin/stop-notify.ps1:*)",
+      "Bash(pwsh *.aiagents/bin/stop-notify.ps1:*)",
+      "Bash(*agentctl.sh*)",
+      "Bash(*agent-runner.sh*)",
+      "Bash(*watch-agent.sh*)",
+      "Bash(*stop-notify.sh*)",
+      "Bash(*wait-signal.sh*)"
+    ]
+  }
+}
