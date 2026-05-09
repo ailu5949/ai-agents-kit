@@ -2,14 +2,12 @@
 # ai-agents-kit v2: Bash 控制入口。
 #
 # 用法:
-#   bash agentctl.sh status                       # 查状态(刷 state/current.json + 日志尾部)
-#   bash agentctl.sh dispatch backend             # 派发后端任务(读 02-后端编码.md,写信号)
-#   bash agentctl.sh dispatch frontend            # 派发前端任务
-#   bash agentctl.sh dispatch bugfix-backend      # 派发后端修复
-#   bash agentctl.sh dispatch bugfix-frontend     # 派发前端修复
-#   bash agentctl.sh wait backend [seconds]       # 阻塞等待 done/failed/timeout
-#   bash agentctl.sh watch backend                # 启动 watcher(交给 watch-agent.sh)
-#   bash agentctl.sh memory "经验文本"           # 写一条记忆到 memory/global/patterns.md
+#   bash agentctl.sh status                                        # 查状态(刷 state/current.json + 日志尾部)
+#   bash agentctl.sh dispatch [--provider X] [--timeout N] <kind>  # 派发任务(backend|frontend|bugfix-backend|bugfix-frontend)
+#   bash agentctl.sh wait backend [seconds]                        # 阻塞等待 done/failed/timeout
+#   bash agentctl.sh watch backend                                 # 启动 watcher(交给 watch-agent.sh)
+#   bash agentctl.sh memory "经验文本"                            # 写一条记忆到 memory/global/patterns.md
+#   bash agentctl.sh release-without-verify <agent> "<reason>"    # 强制跳过验证,直接设置 ready-for-human
 
 set -uo pipefail
 
@@ -75,6 +73,20 @@ if config is None:
 
 sig = os.path.join(root, config["paths"].get("signals", ".aiagents/signals"))
 
+# Read existing state to preserve special states
+existing_state = {}
+existing_path = os.path.join(state_dir, "current.json")
+if os.path.exists(existing_path):
+    try:
+        existing_data = json.load(open(existing_path, encoding="utf-8"))
+        for ag in ("backend", "frontend"):
+            if ag in existing_data:
+                existing_state[ag] = existing_data[ag].get("state", "idle")
+    except Exception:
+        pass
+
+PRESERVED_STATES = {"claude-verifying", "ready-for-human"}
+
 def state(agent):
     for fn, value in [
         (f"task_ready_{agent}", "queued"),
@@ -85,6 +97,10 @@ def state(agent):
     ]:
         if os.path.exists(os.path.join(sig, fn)):
             return value
+    # No signal matches — preserve special states from existing state.json
+    prev = existing_state.get(agent, "idle")
+    if prev in PRESERVED_STATES:
+        return prev
     return "idle"
 
 def worker_state(agent):
@@ -170,25 +186,73 @@ signal_path() {
   esac
 }
 
+# ---------- provider 验证 ----------
+# validate_provider <provider> — exit 2 if provider block exists and provider is unknown
+# If no providers block found, warns but allows through (graceful fallback for v2 configs)
+validate_provider() {
+  local provider="$1"
+  "$PYTHON_BIN" - "$CONFIG_JSON" "$provider" <<'PY'
+import json, os, sys
+config_json, provider = sys.argv[1], sys.argv[2]
+if not os.path.exists(config_json):
+    # No config.json at all — warn but allow through (exit 10 = "soft fail")
+    print(f"Warning: no config.json found; cannot validate provider '{provider}' (no providers block found OR '{provider}' not configured)", file=sys.stderr)
+    sys.exit(10)
+try:
+    config = json.load(open(config_json, encoding="utf-8"))
+except Exception:
+    print(f"Warning: failed to parse {config_json}; cannot validate provider '{provider}'", file=sys.stderr)
+    sys.exit(10)
+providers = config.get("providers", None)
+if providers is None:
+    # No providers block — warn but allow through
+    print(f"Warning: config.json has no 'providers' block; no providers block found OR '{provider}' not configured", file=sys.stderr)
+    sys.exit(10)
+# Providers block exists — strict validation
+if isinstance(providers, dict):
+    available = list(providers.keys())
+elif isinstance(providers, list):
+    available = providers
+else:
+    available = []
+if provider not in available:
+    print(f"Error: unknown provider '{provider}'. Available: {', '.join(available) if available else '(none configured)'}", file=sys.stderr)
+    sys.exit(2)
+sys.exit(0)
+PY
+  local rc=$?
+  # rc=2: providers block exists but provider not found — hard error
+  if [ "$rc" -eq 2 ]; then
+    exit 2
+  fi
+  # rc=10: no providers block — warned, allow through
+  # rc=0: valid
+  return 0
+}
+
 dispatch_agent() {
-  local kind="$1" spec signal
+  local kind="$1" provider_override="${2:-}" timeout_override="${3:-}" spec signal
   spec="$(spec_path "$kind")"
   signal="$(signal_path "$kind")"
   [ -f "$spec" ] || { echo "派发失败,规格文件不存在: $spec" >&2; exit 3; }
-  "$PYTHON_BIN" - "$kind" "$spec" "$signal" <<'PY'
+  "$PYTHON_BIN" - "$kind" "$spec" "$signal" "$provider_override" "$timeout_override" <<'PY'
 import json, sys, datetime
-kind, spec, signal = sys.argv[1:4]
+kind, spec, signal, provider_override, timeout_override = sys.argv[1:6]
 payload = {
     "kind": kind,
     "spec": spec,
     "dispatched_at": datetime.datetime.now().astimezone().isoformat(),
+    "provider_override": provider_override,
+    "timeout_override": timeout_override,
 }
 open(signal, "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False) + "\n")
 PY
   event "$kind" "dispatched" "任务已派发: $(basename "$spec")"
-  echo "✅ 已派发 $kind"
+  echo "dispatched $kind"
   echo "   信号: $signal"
   echo "   spec: $spec"
+  [ -n "$provider_override" ] && echo "   provider: $provider_override"
+  [ -n "$timeout_override" ] && echo "   timeout: ${timeout_override}s"
 }
 
 # ---------- wait ----------
@@ -202,7 +266,7 @@ consume_signal() {
 wait_agent() {
   local agent="$1" max="$2" start elapsed suffix file reason
   start="$(date +%s)"
-  echo "⏳ 等待 Codex-$agent 完成信号(最长 ${max}s)..."
+  echo "waiting Codex-$agent (max ${max}s)..."
   while true; do
     elapsed=$(( $(date +%s) - start ))
     for suffix in done failed timeout; do
@@ -213,19 +277,19 @@ wait_agent() {
         consume_signal "$file"
         event "$agent" "$suffix" "检测到 ${agent}_${suffix}"
         case "$suffix" in
-          done) echo ""; echo "✅ $agent 完成"; exit 0 ;;
-          failed) echo ""; echo "❌ FAILED: $reason"; exit 1 ;;
-          timeout) echo ""; echo "⏰ TIMEOUT: $reason"; exit 2 ;;
+          done) echo ""; echo "$agent done"; exit 0 ;;
+          failed) echo ""; echo "FAILED: $reason"; exit 1 ;;
+          timeout) echo ""; echo "TIMEOUT: $reason"; exit 2 ;;
         esac
       fi
     done
     if [ "$elapsed" -ge "$max" ]; then
       event "$agent" "wait-expired" "等待 ${max}s 超时但未收到信号"
       echo ""
-      echo "⚠️ 等待 ${max}s 仍无信号 — Codex 可能仍在运行(Stop hook 兜底)"
+      echo "wait ${max}s no signal — Codex may still be running (Stop hook fallback)"
       exit 3
     fi
-    printf "\r  ⏳ %3ds / %ds  " "$elapsed" "$max"
+    printf "\r  %3ds / %ds  " "$elapsed" "$max"
     sleep 3
   done
 }
@@ -234,27 +298,54 @@ wait_agent() {
 show_status() {
   write_state
   echo "=========================================="
-  echo "  ai-agents-kit 状态 · $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "  ai-agents-kit status · $(date '+%Y-%m-%d %H:%M:%S')"
   echo "=========================================="
   if [ -f "$STATE_DIR/current.json" ]; then
-    "$PYTHON_BIN" - "$STATE_DIR/current.json" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
+    "$PYTHON_BIN" - "$STATE_DIR/current.json" "$CONFIG_JSON" <<'PY'
+import json, os, sys
+state_file, config_json = sys.argv[1], sys.argv[2]
+data = json.load(open(state_file, encoding="utf-8"))
+
+# Load config for provider lookup
+config = {}
+if os.path.exists(config_json):
+    try:
+        config = json.load(open(config_json, encoding="utf-8"))
+    except Exception:
+        config = {}
+
+def get_provider(agent):
+    # Try agents.<agent>.provider → default_provider → "codex"
+    agents_cfg = config.get("agents", {})
+    if isinstance(agents_cfg, dict) and agent in agents_cfg:
+        p = agents_cfg[agent].get("provider", "")
+        if p:
+            return p
+    dp = config.get("default_provider", "")
+    if dp:
+        return dp
+    return "codex"
+
 def fmt_state(s):
     return {
-        "idle": "💤 空闲",
-        "queued": "⏳ 队列中",
-        "queued-bugfix": "🔧 修复队列中",
-        "running": "🚀 进行中",
-        "done-awaiting-review": "✅ 已完成,待审查",
-        "failed": "❌ 失败",
-        "timeout": "⏰ 超时",
+        "idle": "idle",
+        "queued": "queued",
+        "queued-bugfix": "queued-bugfix",
+        "running": "running",
+        "done-awaiting-review": "done-awaiting-review",
+        "failed": "failed",
+        "timeout": "timeout",
+        "claude-verifying": "claude-verifying",
+        "ready-for-human": "ready-for-human",
     }.get(s, s)
+
 for agent in ("backend", "frontend"):
     a = data[agent]
     w = data["workers"][agent]
-    print(f"【{agent}】 dir={a['dir']} stack={a['stack']}")
-    print(f"   状态: {fmt_state(a['state'])}")
+    provider = get_provider(agent)
+    print(f"[{agent}] dir={a['dir']} stack={a['stack']}")
+    print(f"   state: {fmt_state(a['state'])}")
+    print(f"   provider: {provider}")
     print(f"   worker: {w.get('status','stopped')} pid={w.get('pid','-')} hb={w.get('last_heartbeat','-')}")
 PY
   fi
@@ -264,13 +355,13 @@ PY
     if [ -n "$latest" ] && [ -f "$latest" ]; then
       name="$(basename "$latest")"
       [ "$abbr" = be ] && label="Backend" || label="Frontend"
-      echo "--- $label · $name 尾 15 行 ---"
+      echo "--- $label · $name tail 15 ---"
       tail -15 "$latest"
       echo
     fi
   done
-  echo "状态: $STATE_DIR/current.json"
-  echo "事件: $STATE_DIR/events.jsonl"
+  echo "state: $STATE_DIR/current.json"
+  echo "events: $STATE_DIR/events.jsonl"
 }
 
 add_memory() {
@@ -282,14 +373,117 @@ add_memory() {
     printf -- '- %s\n' "$text"
   } >> "$path"
   event "memory" "captured" "写入记忆"
-  echo "✅ 已写入 $path"
+  echo "written to $path"
+}
+
+# ---------- release-without-verify ----------
+release_without_verify() {
+  local agent="${1:-}" reason="${2:-}"
+  [ -n "$agent" ] || { echo "用法: agentctl.sh release-without-verify <backend|frontend> \"<reason>\"" >&2; exit 2; }
+  [ -n "$reason" ] || { echo "用法: agentctl.sh release-without-verify <backend|frontend> \"<reason>\"" >&2; exit 2; }
+  case "$agent" in
+    backend|frontend) ;;
+    *) echo "未知 agent: $agent (必须是 backend 或 frontend)" >&2; exit 2 ;;
+  esac
+
+  # 1. Edit state/current.json: set agent.state = "ready-for-human"
+  "$PYTHON_BIN" - "$STATE_DIR/current.json" "$agent" <<'PY'
+import json, os, sys, datetime
+state_file, agent = sys.argv[1], sys.argv[2]
+os.makedirs(os.path.dirname(state_file), exist_ok=True)
+if os.path.exists(state_file):
+    try:
+        data = json.load(open(state_file, encoding="utf-8"))
+    except Exception:
+        data = {}
+else:
+    data = {}
+if agent not in data:
+    data[agent] = {}
+data[agent]["state"] = "ready-for-human"
+data["updated_at"] = datetime.datetime.now().astimezone().isoformat()
+open(state_file, "w", encoding="utf-8").write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+PY
+
+  # 2. Append event to events.jsonl with phase=verify-bypassed
+  "$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$agent" "$reason" <<'PY'
+import json, os, sys, datetime
+events_file, agent, reason = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(os.path.dirname(events_file), exist_ok=True)
+record = {
+    "time": datetime.datetime.now().astimezone().isoformat(),
+    "agent": agent,
+    "phase": "verify-bypassed",
+    "status": "ready-for-human",
+    "reason": reason,
+    "by": "lane",
+}
+with open(events_file, "a", encoding="utf-8") as f:
+    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+PY
+
+  # 3. Append to bugs.md if it exists
+  local bugs_md="$MEMORY_DIR/global/bugs.md"
+  if [ -f "$bugs_md" ]; then
+    local ts
+    ts="$(date '+%Y-%m-%d %H:%M')"
+    {
+      printf '\n## %s · verify-bypass: %s\n\n' "$ts" "$agent"
+      printf '**触发**: `/release-without-verify %s "%s"` 显式破例\n' "$agent" "$reason"
+      printf '**reason**: %s\n' "$reason"
+      printf '**待补**: 后续阶段 review 时核对该轮是否有遗漏 bug\n'
+    } >> "$bugs_md"
+  fi
+
+  echo "released without verify: agent=$agent reason=$reason"
 }
 
 case "$COMMAND" in
   status) show_status ;;
-  dispatch) dispatch_agent "$TARGET" ;;
+  dispatch)
+    # Parse optional --provider and --timeout flags, then <kind>
+    _dispatch_provider=""
+    _dispatch_timeout=""
+    _dispatch_kind=""
+    shift  # remove "dispatch" from positional params; remaining are $@
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --provider)
+          shift
+          [ $# -gt 0 ] || { echo "Error: --provider requires an argument" >&2; exit 2; }
+          _dispatch_provider="$1"
+          shift
+          ;;
+        --timeout)
+          shift
+          [ $# -gt 0 ] || { echo "Error: --timeout requires an argument" >&2; exit 2; }
+          _dispatch_timeout="$1"
+          shift
+          ;;
+        -*)
+          echo "Error: unknown flag '$1'" >&2; exit 2
+          ;;
+        *)
+          if [ -n "$_dispatch_kind" ]; then
+            echo "Error: unexpected argument '$1' (kind already set to '$_dispatch_kind')" >&2; exit 2
+          fi
+          _dispatch_kind="$1"
+          shift
+          ;;
+      esac
+    done
+    [ -n "$_dispatch_kind" ] || { echo "Error: dispatch requires <kind>: backend|frontend|bugfix-backend|bugfix-frontend" >&2; exit 2; }
+    # Validate provider if specified
+    if [ -n "$_dispatch_provider" ]; then
+      validate_provider "$_dispatch_provider"
+    fi
+    dispatch_agent "$_dispatch_kind" "$_dispatch_provider" "$_dispatch_timeout"
+    ;;
   wait) wait_agent "$TARGET" "$WAIT_SECONDS" ;;
   watch) bash "$BIN_DIR/watch-agent.sh" "$TARGET" ;;
   memory) add_memory "$TARGET" ;;
-  *) echo "用法: agentctl.sh {status|dispatch|wait|watch|memory} [target] [seconds]" >&2; exit 2 ;;
+  release-without-verify)
+    release_without_verify "${2:-}" "${3:-}"
+    ;;
+  *) echo "用法: agentctl.sh {status|dispatch|wait|watch|memory|release-without-verify} [args]" >&2; exit 2 ;;
 esac
