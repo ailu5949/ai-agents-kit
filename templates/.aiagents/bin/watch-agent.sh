@@ -112,6 +112,36 @@ write_heartbeat
 append_event "watcher-started" "watcher 已启动"
 refresh_state
 
+# Parse provider/timeout overrides from signal payload (JSON body) and export to runner.
+parse_signal_overrides() {
+  local sig_file="$1"
+  PROVIDER_OVERRIDE=""
+  TIMEOUT_OVERRIDE=""
+  [ -s "$sig_file" ] || return 0
+  local body
+  body="$(cat "$sig_file" 2>/dev/null)"
+  [ -n "$body" ] || return 0
+  # Skip if not JSON (defensive — empty marker files used by older versions)
+  echo "$body" | head -c1 | grep -q '{' || return 0
+  PROVIDER_OVERRIDE="$("$PYTHON_BIN" -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    print(d.get("provider_override", ""))
+except Exception:
+    pass
+' "$body" 2>/dev/null || true)"
+  TIMEOUT_OVERRIDE="$("$PYTHON_BIN" -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    print(d.get("timeout_override", ""))
+except Exception:
+    pass
+' "$body" 2>/dev/null || true)"
+  export PROVIDER_OVERRIDE TIMEOUT_OVERRIDE
+}
+
 while true; do
   write_worker "running"
   write_heartbeat
@@ -120,17 +150,21 @@ while true; do
   bug_signal="$SIG_DIR/bugfix_$AGENT"
 
   if [ -f "$task_signal" ]; then
+    parse_signal_overrides "$task_signal"
     rm -f "$task_signal"
     echo ""
-    echo "🔔 $(date '+%H:%M:%S') 检测到 $AGENT 新任务,交给 agent-runner.sh"
+    echo "🔔 $(date '+%H:%M:%S') 检测到 $AGENT 新任务,交给 agent-runner.sh (provider=${PROVIDER_OVERRIDE:-default} timeout=${TIMEOUT_OVERRIDE:-default})"
     bash "$BIN_DIR/agent-runner.sh" "$AGENT" task || true
+    unset PROVIDER_OVERRIDE TIMEOUT_OVERRIDE
   fi
 
   if [ -f "$bug_signal" ]; then
+    parse_signal_overrides "$bug_signal"
     rm -f "$bug_signal"
     echo ""
-    echo "🔧 $(date '+%H:%M:%S') 检测到 $AGENT 修复任务,交给 agent-runner.sh"
+    echo "🔧 $(date '+%H:%M:%S') 检测到 $AGENT 修复任务,交给 agent-runner.sh (provider=${PROVIDER_OVERRIDE:-default} timeout=${TIMEOUT_OVERRIDE:-default})"
     bash "$BIN_DIR/agent-runner.sh" "$AGENT" bugfix || true
+    unset PROVIDER_OVERRIDE TIMEOUT_OVERRIDE
   fi
 
   sleep 2
