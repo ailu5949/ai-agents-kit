@@ -33,6 +33,12 @@
       "Bash(*watch-agent.sh*)",
       "Bash(*stop-notify.sh*)",
       "Bash(*wait-signal.sh*)"
+    ],
+    "deny": [
+      "Edit(${BACKEND_DIR}/**)",
+      "Edit(${FRONTEND_DIR}/**)",
+      "Write(${BACKEND_DIR}/**)",
+      "Write(${FRONTEND_DIR}/**)"
     ]
   }
 }
