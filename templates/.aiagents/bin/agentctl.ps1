@@ -3,13 +3,22 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("status", "dispatch", "wait", "watch", "memory")]
+  [ValidateSet("status", "dispatch", "wait", "watch", "memory", "release-without-verify")]
   [string]$Command = "status",
 
   [Parameter(Position = 1)]
   [string]$Target = "backend",
 
-  [int]$WaitSeconds = 540
+  [int]$WaitSeconds = 540,
+
+  [Parameter()]
+  [string]$Provider = "",
+
+  [Parameter()]
+  [int]$Timeout = 0,
+
+  [Parameter()]
+  [string]$Reason = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,12 +76,24 @@ foreach ($dir in @($SignalDir, $LogDir, $StateDir, $MemoryDir, $SpecDir, (Join-P
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
 }
 
+# Change 6: Preserve claude-verifying / ready-for-human states across signal-driven state writes
 function Get-AgentState([string]$Agent) {
   if (Test-Path (Join-Path $SignalDir "task_ready_$Agent")) { return "queued" }
   if (Test-Path (Join-Path $SignalDir "bugfix_$Agent")) { return "queued-bugfix" }
   if (Test-Path (Join-Path $SignalDir "${Agent}_done")) { return "done-awaiting-review" }
   if (Test-Path (Join-Path $SignalDir "${Agent}_failed")) { return "failed" }
   if (Test-Path (Join-Path $SignalDir "${Agent}_timeout")) { return "timeout" }
+  # Preserve verifying/ready-for-human if no signal overrides
+  $statePath = Join-Path $StateDir "current.json"
+  if (Test-Path $statePath) {
+    try {
+      $current = Get-Content -Raw -Encoding UTF8 $statePath | ConvertFrom-Json
+      if ($current.PSObject.Properties[$Agent]) {
+        $s = $current.$Agent.state
+        if ($s -in @("claude-verifying","ready-for-human")) { return $s }
+      }
+    } catch {}
+  }
   return "idle"
 }
 
@@ -163,18 +184,37 @@ function Get-SignalPath([string]$Kind) {
   }
 }
 
-function Dispatch-Agent([string]$Kind) {
+# Change 2: Dispatch-Agent accepts Provider/Timeout overrides
+function Dispatch-Agent([string]$Kind, [string]$ProviderOverride = "", [int]$TimeoutOverride = 0) {
+  # Validate provider if given
+  if ($ProviderOverride) {
+    if ($Config.PSObject.Properties["providers"]) {
+      if (-not $Config.providers.PSObject.Properties[$ProviderOverride]) {
+        $available = ($Config.providers.PSObject.Properties | Select-Object -ExpandProperty Name) -join ", "
+        throw "未知 provider: '$ProviderOverride'。可用: $available"
+      }
+    } else {
+      Write-Warning "config.json 中无 providers 配置,忽略 --provider 参数(v2 兼容模式)"
+    }
+  }
+
   $spec = Get-SpecPath $Kind
   if (-not (Test-Path $spec)) { throw "派发失败,规格文件不存在: $spec" }
   $signal = Get-SignalPath $Kind
   $payload = [ordered]@{
-    kind = $Kind; spec = $spec; dispatched_at = (Get-Date).ToString("o")
+    kind             = $Kind
+    spec             = $spec
+    dispatched_at    = (Get-Date).ToString("o")
+    provider_override = $ProviderOverride
+    timeout_override  = if ($TimeoutOverride -gt 0) { "$TimeoutOverride" } else { "" }
   }
   Write-Utf8File $signal ($payload | ConvertTo-Json -Compress)
-  Append-Event $Kind "dispatched" "任务已派发" @{ spec = $spec; signal = $signal }
-  Write-Host "✅ 已派发 $Kind"
+  Append-Event $Kind "dispatched" "任务已派发" @{ spec = $spec; signal = $signal; provider_override = $ProviderOverride; timeout_override = if ($TimeoutOverride -gt 0) { "$TimeoutOverride" } else { "" } }
+  Write-Host "已派发 $Kind"
   Write-Host "   信号: $signal"
   Write-Host "   spec: $spec"
+  if ($ProviderOverride) { Write-Host "   provider: $ProviderOverride" }
+  if ($TimeoutOverride -gt 0) { Write-Host "   timeout: ${TimeoutOverride}s" }
 }
 
 function Consume-Signal([string]$Path) {
@@ -185,7 +225,7 @@ function Consume-Signal([string]$Path) {
 
 function Wait-Agent([string]$Agent, [int]$MaxSeconds) {
   $start = Get-Date
-  Write-Host "⏳ 等待 Codex-$Agent 完成信号(最长 ${MaxSeconds}s)..."
+  Write-Host "等待 Codex-$Agent 完成信号(最长 ${MaxSeconds}s)..."
   while ($true) {
     $elapsed = [int]((Get-Date) - $start).TotalSeconds
     foreach ($suffix in @("done", "failed", "timeout")) {
@@ -195,65 +235,56 @@ function Wait-Agent([string]$Agent, [int]$MaxSeconds) {
         if ($suffix -ne "done") { $reason = (Get-Content -Raw -Encoding UTF8 $path) }
         Consume-Signal $path
         Append-Event $Agent $suffix "检测到 ${Agent}_$suffix" @{ elapsed_seconds = $elapsed; reason = $reason }
-        if ($suffix -eq "done") { Write-Host ""; Write-Host "✅ $Agent 完成"; exit 0 }
-        if ($suffix -eq "failed") { Write-Host ""; Write-Host "❌ FAILED: $reason"; exit 1 }
-        if ($suffix -eq "timeout") { Write-Host ""; Write-Host "⏰ TIMEOUT: $reason"; exit 2 }
+        if ($suffix -eq "done") { Write-Host ""; Write-Host "$Agent 完成"; exit 0 }
+        if ($suffix -eq "failed") { Write-Host ""; Write-Host "FAILED: $reason"; exit 1 }
+        if ($suffix -eq "timeout") { Write-Host ""; Write-Host "TIMEOUT: $reason"; exit 2 }
       }
     }
     if ($elapsed -ge $MaxSeconds) {
       Append-Event $Agent "wait-expired" "等待超时但未收到信号" @{ elapsed_seconds = $elapsed }
       Write-Host ""
-      Write-Host "⚠️ 等待 ${MaxSeconds}s 仍无信号 — Codex 可能仍在运行(Stop hook 兜底)"
+      Write-Host "等待 ${MaxSeconds}s 仍无信号 — Codex 可能仍在运行(Stop hook 兜底)"
       exit 3
     }
     Start-Sleep -Seconds 3
   }
 }
 
-function Invoke-CodexTask([string]$Agent, [string]$SpecPath) {
-  $agentConfig = if ($Agent -eq "backend") { $Config.backend } else { $Config.frontend }
-  $workDir = if ([System.IO.Path]::IsPathRooted($agentConfig.dir)) { $agentConfig.dir } else { Join-Path $ProjectRoot $agentConfig.dir }
-  if (-not (Test-Path $workDir)) {
-    Write-Utf8File (Join-Path $SignalDir "${Agent}_failed") "$Agent 工作目录不存在: $workDir"
-    Append-Event $Agent "failed" "工作目录不存在" @{ work_dir = $workDir }
+# Change 4: Invoke-CodexTask shells out to bash agent-runner.sh
+function Invoke-CodexTask([string]$Agent, [string]$Mode) {
+  # Mode is "task" or "bugfix"
+  $runner = Join-Path $BinDir "agent-runner.sh"
+  if (-not (Test-Path $runner)) {
+    Write-Utf8File (Join-Path $SignalDir "${Agent}_failed") "agent-runner.sh 不存在: $runner"
+    Append-Event $Agent "failed" "agent-runner.sh 缺失" @{ runner = $runner }
     return
   }
 
-  $abbr = if ($Agent -eq "backend") { "be" } else { "fe" }
-  $log = Join-Path $LogDir ("{0}_{1}.log" -f $abbr, (Get-Date -Format "yyyyMMdd"))
-  $prompt = Get-Content -Raw -Encoding UTF8 $SpecPath
-  $argList = @("exec")
-  if ($Config.codex.args) { $argList += ($Config.codex.args -split "\s+") }
-  $argList += $prompt
-
-  Append-Event $Agent "running" "Codex 开始执行" @{ spec = $SpecPath; work_dir = $workDir; log = $log }
-  Add-Content -Path $log -Encoding UTF8 -Value "`n============================================================"
-  Add-Content -Path $log -Encoding UTF8 -Value "agent=$Agent time=$(Get-Date -Format o)"
-  Add-Content -Path $log -Encoding UTF8 -Value "spec=$SpecPath"
-  Add-Content -Path $log -Encoding UTF8 -Value "work_dir=$workDir"
-
-  $out = Join-Path $LogDir (".out_{0}.tmp" -f [guid]::NewGuid().ToString("N"))
-  $err = Join-Path $LogDir (".err_{0}.tmp" -f [guid]::NewGuid().ToString("N"))
-  $process = Start-Process -FilePath $Config.codex.bin -ArgumentList $argList -WorkingDirectory $workDir -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-  $finished = $process.WaitForExit([int]$Config.codex.timeout_seconds * 1000)
-  if (-not $finished) {
-    $process.Kill()
-    Write-Utf8File (Join-Path $SignalDir "${Agent}_timeout") "$Agent 超时 @ $(Get-Date -Format o)"
-    Append-Event $Agent "timeout" "Codex 超时" @{ timeout_seconds = $Config.codex.timeout_seconds }
-    return
+  # Read signal file body for provider/timeout override
+  $sigName = if ($Mode -eq "task") { "task_ready_$Agent" } else { "bugfix_$Agent" }
+  $sigPath = Join-Path $SignalDir $sigName
+  $providerOverride = ""
+  $timeoutOverride  = ""
+  if (Test-Path $sigPath) {
+    try {
+      $body = Get-Content -Raw -Encoding UTF8 $sigPath | ConvertFrom-Json
+      if ($body.provider_override) { $providerOverride = $body.provider_override }
+      if ($body.timeout_override)  { $timeoutOverride  = $body.timeout_override }
+    } catch {}
   }
 
-  if (Test-Path $out) { Get-Content -Raw -Encoding UTF8 $out | Add-Content -Encoding UTF8 -Path $log }
-  if (Test-Path $err) { Get-Content -Raw -Encoding UTF8 $err | Add-Content -Encoding UTF8 -Path $log }
-  Remove-Item -Force -ErrorAction SilentlyContinue $out, $err
+  Append-Event $Agent "dispatched-to-runner" "委派 bash agent-runner" @{ mode = $Mode; provider_override = $providerOverride; timeout_override = $timeoutOverride }
 
-  if ($process.ExitCode -eq 0) {
-    Write-Utf8File (Join-Path $SignalDir "${Agent}_done") ""
-    Append-Event $Agent "done" "Codex 完成" @{ exit_code = 0 }
-  } else {
-    Write-Utf8File (Join-Path $SignalDir "${Agent}_failed") "$Agent 失败 rc=$($process.ExitCode) @ $(Get-Date -Format o)"
-    Append-Event $Agent "failed" "Codex 失败" @{ exit_code = $process.ExitCode }
-  }
+  # Set env and shell out
+  $env:PROVIDER_OVERRIDE = $providerOverride
+  $env:TIMEOUT_OVERRIDE  = $timeoutOverride
+  & bash $runner $Agent $Mode
+  $rc = $LASTEXITCODE
+  $env:PROVIDER_OVERRIDE = $null
+  $env:TIMEOUT_OVERRIDE  = $null
+
+  # agent-runner already wrote signal/state/events; we just log the rc
+  Append-Event $Agent "runner-exit" "bash agent-runner 返回 rc=$rc" @{ rc = $rc }
 }
 
 function Watch-Agent([string]$Agent) {
@@ -264,20 +295,31 @@ function Watch-Agent([string]$Agent) {
   while ($true) {
     $taskSignal = Join-Path $SignalDir "task_ready_$Agent"
     $bugSignal  = Join-Path $SignalDir "bugfix_$Agent"
+    # Change 4: Pass mode to Invoke-CodexTask; agent-runner consumes the signal file itself
     if (Test-Path $taskSignal) {
-      Remove-Item -Force $taskSignal
       Write-Host ""
-      Write-Host "🔔 $(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 新任务"
-      Invoke-CodexTask $Agent (Get-SpecPath $Agent)
+      Write-Host "$(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 新任务"
+      Invoke-CodexTask $Agent "task"
     }
     if (Test-Path $bugSignal) {
-      Remove-Item -Force $bugSignal
       Write-Host ""
-      Write-Host "🔧 $(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 修复任务"
-      Invoke-CodexTask $Agent (Get-SpecPath "bugfix-$Agent")
+      Write-Host "$(Get-Date -Format 'HH:mm:ss') 检测到 $Agent 修复任务"
+      Invoke-CodexTask $Agent "bugfix"
     }
     Start-Sleep -Seconds 2
   }
+}
+
+# Change 5: Get-AgentProvider for provider column in status output
+function Get-AgentProvider([string]$Agent) {
+  if ($Config.PSObject.Properties["agents"] -and $Config.agents.PSObject.Properties[$Agent]) {
+    $p = $Config.agents.$Agent.provider
+    if ($p) { return $p }
+  }
+  if ($Config.PSObject.Properties["default_provider"]) {
+    if ($Config.default_provider) { return $Config.default_provider }
+  }
+  return "codex"
 }
 
 function Show-Status {
@@ -285,10 +327,12 @@ function Show-Status {
   Write-Host "=========================================="
   Write-Host "  ai-agents-kit 状态 · $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
   Write-Host "=========================================="
+  # Change 5: Include new states in stateMap
   $stateMap = @{
-    "idle" = "💤 空闲"; "queued" = "⏳ 队列中"; "queued-bugfix" = "🔧 修复队列中";
-    "running" = "🚀 进行中"; "done-awaiting-review" = "✅ 已完成,待审查";
-    "failed" = "❌ 失败"; "timeout" = "⏰ 超时"
+    "idle" = "空闲"; "queued" = "队列中"; "queued-bugfix" = "修复队列中"
+    "running" = "进行中"; "done-awaiting-review" = "已完成,待审查"
+    "claude-verifying" = "主 Claude 验证中"; "ready-for-human" = "等待 Lane 决策"
+    "failed" = "失败"; "timeout" = "超时"
   }
   foreach ($agent in @("backend", "frontend")) {
     $state = Get-AgentState $agent
@@ -296,6 +340,8 @@ function Show-Status {
     Write-Host ""
     Write-Host "[$agent] $($stateMap[$state])"
     Write-Host "   dir=$($Config.$agent.dir) stack=$($Config.$agent.stack)"
+    # Change 5: Show provider column
+    Write-Host "   provider=$(Get-AgentProvider $agent)"
     Write-Host "   worker=$($worker['status']) pid=$($worker['pid']) hb=$($worker['last_heartbeat'])"
     $prefix = if ($agent -eq "backend") { "be" } else { "fe" }
     $latest = Get-ChildItem -Path $LogDir -Filter "${prefix}_*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -317,13 +363,57 @@ function Add-Memory([string]$Text) {
   if (-not (Test-Path $path)) { Write-Utf8File $path "# 成功模式 (Patterns)`n`n" }
   Add-Content -Path $path -Encoding UTF8 -Value ("`n## {0}`n`n- {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $Text)
   Append-Event "memory" "captured" "写入记忆" @{ text = $Text }
-  Write-Host "✅ 已写入 $path"
+  Write-Host "已写入 $path"
 }
 
+# Change 3: Release-WithoutVerify function
+function Release-WithoutVerify([string]$Agent, [string]$ReleaseReason) {
+  if (-not $Agent -or -not $ReleaseReason) {
+    throw "用法: agentctl.ps1 -Command release-without-verify -Target <backend|frontend> -Reason '<reason>'"
+  }
+  if ($Agent -notin @("backend","frontend")) { throw "未知 agent: $Agent" }
+
+  # Update state/current.json
+  $statePath = Join-Path $StateDir "current.json"
+  if (Test-Path $statePath) {
+    $state = Get-Content -Raw -Encoding UTF8 $statePath | ConvertFrom-Json
+    if ($state.PSObject.Properties[$Agent]) {
+      $state.$Agent | Add-Member -NotePropertyName state -NotePropertyValue "ready-for-human" -Force
+    }
+    $state | Add-Member -NotePropertyName updated_at -NotePropertyValue (Get-Date).ToString("o") -Force
+    Write-Utf8File $statePath ($state | ConvertTo-Json -Depth 10)
+  }
+
+  # Append bypass event
+  $event = [ordered]@{
+    time   = (Get-Date).ToString("o")
+    agent  = $Agent
+    phase  = "verify-bypassed"
+    status = "ready-for-human"
+    reason = $ReleaseReason
+    by     = "lane"
+  }
+  Add-Content -Path (Join-Path $StateDir "events.jsonl") -Encoding UTF8 -Value ($event | ConvertTo-Json -Compress -Depth 8)
+
+  # Append to memory bugs.md if exists
+  $bugsPath = Join-Path $MemoryDir "global\bugs.md"
+  if (Test-Path $bugsPath) {
+    $section = "`n## $(Get-Date -Format 'yyyy-MM-dd HH:mm') · verify-bypass: $Agent`n`n"
+    $section += "**触发**: ``-Command release-without-verify -Target $Agent -Reason '$ReleaseReason'`` 显式破例`n"
+    $section += "**reason**: $ReleaseReason`n"
+    $section += "**待补**: 后续阶段 review 时核对该轮是否有遗漏 bug`n"
+    Add-Content -Path $bugsPath -Encoding UTF8 -Value $section
+  }
+
+  Write-Host "released without verify: agent=$Agent reason=$ReleaseReason"
+}
+
+# Change 7: Bottom dispatch table
 switch ($Command) {
   "status"   { Show-Status }
-  "dispatch" { Dispatch-Agent $Target }
+  "dispatch" { Dispatch-Agent $Target $Provider $Timeout }
   "wait"     { Wait-Agent $Target $WaitSeconds }
   "watch"    { Watch-Agent $Target }
   "memory"   { Add-Memory $Target }
+  "release-without-verify" { Release-WithoutVerify $Target $Reason }
 }
