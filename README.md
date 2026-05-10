@@ -8,6 +8,31 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.2.2 — logs 默认过滤 stream-json 残留(2026-05-10)
+
+**痛点**: v3.2.1 logs follow 时,如果 pretty log 里混有 stream-json 原始 JSON Lines(v3.0.1 时代旧任务残留 / 用户混用),tail -F 会刷出大量 `{"type":"system",...}` 一行 1KB+ 的难读内容。
+
+**修复**: `logs follow pretty` **默认过滤** `^{` 开头行(stream-json Lines 都以 `{"key":` 开头,业务文本不会以 `{` 开头):
+
+```bash
+bash agentctl.sh logs backend            # 默认过滤 — 看不到 raw JSON
+bash agentctl.sh logs frontend           # 同上
+bash agentctl.sh logs both               # 同上
+
+# debug 时禁用过滤 (看完整内容):
+LOGS_NOFILTER=1 bash agentctl.sh logs backend
+```
+
+**作用范围**:
+
+| kind | 默认行为 |
+|---|---|
+| `pretty` | 过滤 `^{` 行 (默认 ON) |
+| `worker` | 不过滤 (watcher 自身 echo 不含 JSON) |
+| `raw` | 不过滤 (用户明确想看原始 JSON 才会选 raw) |
+
+实测: `fe_20260510.log` 末 5 行(全是 JSON Lines)经过滤后 0 输出,LOGS_NOFILTER=1 时正常显示。
+
 ## v3.2.1 — 日志监控子命令 (logs)(2026-05-10)
 
 **痛点**: v3.2.0 一键 `up` 后 watcher 全后台,Lane 看不到实时执行,要手动 `tail -F .aiagents/logs/be_20260510.log`(还要每天换日期),不友好。

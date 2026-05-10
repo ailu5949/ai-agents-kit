@@ -517,16 +517,35 @@ function Logs-Snapshot {
   Write-Host "  pwsh $PSCommandPath logs backend raw       # 跟 claude 原始 JSON"
 }
 
+# logs follow 默认过滤 stream-json 残留行 — pretty kind 启用,raw/worker 不启用
+# $env:LOGS_NOFILTER='1' 可禁用过滤 (debug 时看完整内容)
+function _Logs-Filter {
+  param([Parameter(ValueFromPipeline)]$Line)
+  process {
+    if ($env:LOGS_NOFILTER -eq '1') { $Line }
+    elseif ($Line -notmatch '^\{') { $Line }
+  }
+}
+
 function Logs-Follow([string]$Agent, [string]$Kind = 'pretty') {
   if ($Agent -eq 'both' -or $Agent -eq 'all') {
     $be = Get-LogPath 'backend' 'pretty'
     $fe = Get-LogPath 'frontend' 'pretty'
     if (-not (Test-Path $be)) { New-Item -ItemType File -Path $be -Force | Out-Null }
     if (-not (Test-Path $fe)) { New-Item -ItemType File -Path $fe -Force | Out-Null }
-    Write-Host "follow $be + $fe (Ctrl+C 退出)"
-    # PowerShell 单进程不能同时 -Wait 两个文件;并发后台 job 各 tail 一个
-    $j1 = Start-Job -ScriptBlock { param($p) Get-Content -Path $p -Wait -Tail 50 -Encoding UTF8 | ForEach-Object { "[BE] $_" } } -ArgumentList $be
-    $j2 = Start-Job -ScriptBlock { param($p) Get-Content -Path $p -Wait -Tail 50 -Encoding UTF8 | ForEach-Object { "[FE] $_" } } -ArgumentList $fe
+    Write-Host "follow $be + $fe (Ctrl+C 退出, 默认过滤 JSON; \$env:LOGS_NOFILTER=1 看完整)"
+    $j1 = Start-Job -ScriptBlock {
+      param($p, $noFilter)
+      Get-Content -Path $p -Wait -Tail 50 -Encoding UTF8 | ForEach-Object {
+        if ($noFilter -eq '1' -or $_ -notmatch '^\{') { "[BE] $_" }
+      }
+    } -ArgumentList $be, $env:LOGS_NOFILTER
+    $j2 = Start-Job -ScriptBlock {
+      param($p, $noFilter)
+      Get-Content -Path $p -Wait -Tail 50 -Encoding UTF8 | ForEach-Object {
+        if ($noFilter -eq '1' -or $_ -notmatch '^\{') { "[FE] $_" }
+      }
+    } -ArgumentList $fe, $env:LOGS_NOFILTER
     try {
       while ($true) { Receive-Job -Job $j1, $j2 | Write-Host; Start-Sleep -Milliseconds 200 }
     } finally {
@@ -548,8 +567,13 @@ function Logs-Follow([string]$Agent, [string]$Kind = 'pretty') {
     Write-Host "日志暂不存在,等待第一次写入 ($f)..."
     New-Item -ItemType File -Path $f -Force | Out-Null
   }
-  Write-Host "follow $f (Ctrl+C 退出)"
-  Get-Content -Path $f -Wait -Tail 50 -Encoding UTF8
+  if ($Kind -eq 'pretty') {
+    Write-Host "follow $f (Ctrl+C 退出, 默认过滤 JSON; \$env:LOGS_NOFILTER=1 看完整)"
+    Get-Content -Path $f -Wait -Tail 50 -Encoding UTF8 | _Logs-Filter
+  } else {
+    Write-Host "follow $f (Ctrl+C 退出, kind=$Kind 不过滤)"
+    Get-Content -Path $f -Wait -Tail 50 -Encoding UTF8
+  }
 }
 
 # Change 7: Bottom dispatch table

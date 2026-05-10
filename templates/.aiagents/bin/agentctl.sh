@@ -684,17 +684,27 @@ logs_snapshot() {
   echo "  bash $BIN_DIR/agentctl.sh logs backend raw       # 跟 claude 原始 JSON"
 }
 
+# logs follow 默认过滤 stream-json 残留行 (^{") — 历史 v3.0.1 log 或 raw 误传都不会刷屏
+# LOGS_NOFILTER=1 可禁用过滤 (debug 时看完整内容)
+_logs_filter() {
+  if [ "${LOGS_NOFILTER:-0}" = "1" ]; then
+    cat
+  else
+    # 过滤以 { 开头的行 (stream-json Lines 都以 {"type":..., {"subtype":... 开头)
+    grep --line-buffered -v '^{' || cat
+  fi
+}
+
 logs_follow() {
   local agent="$1" kind="${2:-pretty}"
   if [ "$agent" = "both" ] || [ "$agent" = "all" ]; then
     local be fe
     be="$(_log_path_for backend pretty)"
     fe="$(_log_path_for frontend pretty)"
-    # 文件不存在时 tail -F 会等它出现,可直接传两个
     [ -f "$be" ] || touch "$be"
     [ -f "$fe" ] || touch "$fe"
-    echo "tail -F $be $fe (Ctrl+C 退出)"
-    tail -F "$be" "$fe"
+    echo "tail -F $be $fe (Ctrl+C 退出, 默认过滤 JSON; LOGS_NOFILTER=1 看完整)"
+    tail -F "$be" "$fe" | _logs_filter
     return
   fi
   if [ "$agent" != "backend" ] && [ "$agent" != "frontend" ]; then
@@ -711,8 +721,14 @@ logs_follow() {
     echo "日志暂不存在,等待第一次写入 ($f)..."
     touch "$f"
   fi
-  echo "tail -F $f (Ctrl+C 退出)"
-  tail -F "$f"
+  # raw kind 故意不过滤(用户明确想看原始 JSON);worker 也不过滤(本来就是 watcher echo)
+  if [ "$kind" = "pretty" ]; then
+    echo "tail -F $f (Ctrl+C 退出, 默认过滤 JSON; LOGS_NOFILTER=1 看完整)"
+    tail -F "$f" | _logs_filter
+  else
+    echo "tail -F $f (Ctrl+C 退出, kind=$kind 不过滤)"
+    tail -F "$f"
+  fi
 }
 
 watchers_down() {
