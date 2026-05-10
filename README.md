@@ -8,6 +8,40 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.2.0 — 一键启停 (up/down/restart)(2026-05-10)
+
+**痛点**: 冷启动每次要敲 200 字符 / 2 行的 nohup + disown 双行命令,反人类:
+
+```bash
+nohup bash .aiagents/bin/agentctl.sh watch backend  > .aiagents/logs/worker-backend.log  2>&1 < /dev/null & disown
+nohup bash .aiagents/bin/agentctl.sh watch frontend > .aiagents/logs/worker-frontend.log 2>&1 < /dev/null & disown
+```
+
+**修复**: `agentctl.sh` / `agentctl.ps1` 加 `up` / `down` / `restart` 子命令:
+
+```bash
+# Bash (git-bash on Windows / Linux / macOS)
+bash .aiagents/bin/agentctl.sh up        # 一键起 backend + frontend
+bash .aiagents/bin/agentctl.sh down      # 一键停所有
+bash .aiagents/bin/agentctl.sh restart   # down + up
+
+# PowerShell (Windows 真后台,关窗口不影响 watcher)
+pwsh .aiagents/bin/agentctl.ps1 up
+pwsh .aiagents/bin/agentctl.ps1 down
+pwsh .aiagents/bin/agentctl.ps1 restart
+```
+
+**字符数**: 200 → 21(Bash)/30(PowerShell),减少 ~85%。
+
+**实现要点**:
+
+- **幂等**: 若 worker 已在跑(`workers.json` 有 pid + `kill -0` 通过),跳过不重复启动
+- **真后台**:
+  - Bash 路径用 `nohup ... > log 2>&1 < /dev/null & disown`
+  - PowerShell 路径用 `Start-Process -WindowStyle Hidden`(脱离当前 console,关窗口不影响)
+- **stale pid 清理**: down 时 `kill -TERM` 后 0.3s 不退则 `kill -9`
+- **alias**: `up` / `start` 等价,`down` / `stop` 等价
+
 ## v3.1.0 — 桌面通知层 + watcher cleanup 修复(2026-05-10)
 
 **痛点**: 主 Claude 离线时(用户切到别的项目 / Claude Code 关闭),编码 agent 完成 / 失败 / 超时**没有任何通知**。Stop hook 只在对应项目的 Claude Code 会话里 turn 结束时触发,Lane 不在 → signal 堆积无人处理。choseStock 实战中 backend 完成 6 小时无人审查就是这个问题。

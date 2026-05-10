@@ -2,10 +2,13 @@
 # ai-agents-kit v2: Bash 控制入口。
 #
 # 用法:
+#   bash agentctl.sh up                                            # 一键起 backend + frontend watcher (后台 + disown)
+#   bash agentctl.sh down                                          # 一键停所有 watcher
+#   bash agentctl.sh restart                                       # down + up
 #   bash agentctl.sh status                                        # 查状态(刷 state/current.json + 日志尾部)
 #   bash agentctl.sh dispatch [--provider X] [--timeout N] <kind>  # 派发任务(backend|frontend|bugfix-backend|bugfix-frontend)
 #   bash agentctl.sh wait backend [seconds]                        # 阻塞等待 done/failed/timeout
-#   bash agentctl.sh watch backend                                 # 启动 watcher(交给 watch-agent.sh)
+#   bash agentctl.sh watch backend                                 # 启动单个 watcher (前台,通常由 up 子命令后台调)
 #   bash agentctl.sh memory "经验文本"                            # 写一条记忆到 memory/global/patterns.md
 #   bash agentctl.sh release-without-verify <agent> "<reason>"    # 强制跳过验证,直接设置 ready-for-human
 
@@ -571,7 +574,87 @@ EOF
   echo "派单成功后 handover.md 自动归档到 runtime/archive/"
 }
 
+# ---------- v3.2 一键启停 (up/down/restart) ----------
+# 痛点: 冷启动每次敲 200 字符的 nohup ... & disown 双行,反人类。
+# 设计:
+#   - up 起两个 watcher (background + nohup + disown),pid 取 $! 立即记录
+#   - 已在跑则跳过(workers.json + kill -0 双重确认,防 stale pid 误判)
+#   - down 从 workers.json 读 pid,kill 后清状态
+#   - 兼容 git-bash on Windows: nohup / disown / & 都可用,但 Windows 关 git-bash
+#     窗口可能带走子进程,提示用户用 PowerShell agentctl.ps1 等价命令获得真后台
+
+_get_alive_worker_pid() {
+  # echoes pid if workers.json has one and process is alive; otherwise empty.
+  local agent="$1" pid=""
+  [ -f "$RUNTIME_DIR/workers.json" ] || return 0
+  pid="$("$PYTHON_BIN" -c "
+import json
+try:
+    d = json.load(open(r'$RUNTIME_DIR/workers.json', encoding='utf-8'))
+    p = (d.get('$agent') or {}).get('pid')
+    if p: print(p)
+except Exception:
+    pass
+" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+
+watchers_up() {
+  local started=0 already=0
+  for agent in backend frontend; do
+    local log="$LOG_DIR/worker-${agent}.log"
+    local pid
+    pid="$(_get_alive_worker_pid "$agent")"
+    if [ -n "$pid" ]; then
+      echo "ℹ️  $agent watcher 已在跑 (pid=$pid, log=$log) — 跳过"
+      already=$((already+1))
+      continue
+    fi
+    nohup bash "$BIN_DIR/watch-agent.sh" "$agent" > "$log" 2>&1 < /dev/null &
+    local new_pid=$!
+    disown 2>/dev/null || true
+    echo "✅ $agent watcher 启动 pid=$new_pid · log=$log"
+    started=$((started+1))
+  done
+  echo ""
+  echo "总计: $started 个新启动 / $already 个已在跑"
+  if [ "$started" -gt 0 ]; then
+    echo "提示: bash $BIN_DIR/agentctl.sh status 可查实时状态;Ctrl+C 不影响后台 watcher"
+  fi
+}
+
+watchers_down() {
+  local stopped=0 absent=0
+  for agent in backend frontend; do
+    local pid
+    pid="$(_get_alive_worker_pid "$agent")"
+    if [ -z "$pid" ]; then
+      echo "ℹ️  $agent: 没有活动的 watcher"
+      absent=$((absent+1))
+      continue
+    fi
+    if kill "$pid" 2>/dev/null; then
+      sleep 0.3
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+      echo "✅ $agent watcher 已停止 (pid=$pid)"
+      stopped=$((stopped+1))
+    else
+      echo "⚠️  $agent: kill pid=$pid 失败(可能已死)"
+    fi
+  done
+  echo ""
+  echo "总计: $stopped 个已停 / $absent 个已无"
+}
+
+# ---------- 子命令分派 ----------
 case "$COMMAND" in
+  up|start) watchers_up ;;
+  down|stop) watchers_down ;;
+  restart)
+    watchers_down
+    sleep 0.5
+    watchers_up
+    ;;
   status) show_status ;;
   dispatch)
     # Parse optional --provider and --timeout flags, then <kind>
@@ -621,5 +704,5 @@ case "$COMMAND" in
   retry-other-provider)
     retry_other_provider "${2:-}"
     ;;
-  *) echo "用法: agentctl.sh {status|dispatch|wait|watch|memory|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
+  *) echo "用法: agentctl.sh {up|down|restart|status|dispatch|wait|watch|memory|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
 esac

@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("status", "dispatch", "wait", "watch", "memory", "release-without-verify")]
+  [ValidateSet("up", "start", "down", "stop", "restart", "status", "dispatch", "wait", "watch", "memory", "release-without-verify")]
   [string]$Command = "status",
 
   [Parameter(Position = 1)]
@@ -408,8 +408,76 @@ function Release-WithoutVerify([string]$Agent, [string]$ReleaseReason) {
   Write-Host "released without verify: agent=$Agent reason=$ReleaseReason"
 }
 
+# v3.2 一键启停 (up/down/restart) — Bash agentctl.sh 等价
+function Get-AliveWorkerPid([string]$Agent) {
+  $workersJson = Join-Path $RuntimeDir "workers.json"
+  if (-not (Test-Path $workersJson)) { return $null }
+  try {
+    $d = Get-Content -Encoding UTF8 $workersJson -ErrorAction Stop | ConvertFrom-Json
+    $entry = $d.$Agent
+    if (-not $entry) { return $null }
+    $alivePid = $entry.pid
+    if (-not $alivePid) { return $null }
+    if (Get-Process -Id $alivePid -ErrorAction SilentlyContinue) { return $alivePid }
+  } catch { }
+  return $null
+}
+
+function Watchers-Up {
+  $started = 0; $already = 0
+  $psHost = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+  foreach ($agent in @('backend', 'frontend')) {
+    $log = Join-Path $LogDir "worker-$agent.log"
+    $errLog = "$log.err"
+    $alive = Get-AliveWorkerPid $agent
+    if ($alive) {
+      Write-Host "ℹ️  $agent watcher 已在跑 (pid=$alive, log=$log) — 跳过"
+      $already++
+      continue
+    }
+    $proc = Start-Process -FilePath $psHost `
+      -ArgumentList "-NoProfile","-NonInteractive","-File",$PSCommandPath,"watch",$agent `
+      -RedirectStandardOutput $log `
+      -RedirectStandardError $errLog `
+      -WindowStyle Hidden -PassThru
+    Write-Host "✅ $agent watcher 启动 pid=$($proc.Id) · log=$log"
+    $started++
+  }
+  Write-Host ""
+  Write-Host "总计: $started 个新启动 / $already 个已在跑"
+  if ($started -gt 0) {
+    Write-Host "提示: pwsh $PSCommandPath status 可查实时状态;关闭当前窗口不影响后台 watcher (Start-Process 已脱离控制台)"
+  }
+}
+
+function Watchers-Down {
+  $stopped = 0; $absent = 0
+  foreach ($agent in @('backend', 'frontend')) {
+    $alive = Get-AliveWorkerPid $agent
+    if (-not $alive) {
+      Write-Host "ℹ️  $agent: 没有活动的 watcher"
+      $absent++
+      continue
+    }
+    try {
+      Stop-Process -Id $alive -Force -ErrorAction Stop
+      Write-Host "✅ $agent watcher 已停止 (pid=$alive)"
+      $stopped++
+    } catch {
+      Write-Host "⚠️  $agent: 停 pid=$alive 失败: $_"
+    }
+  }
+  Write-Host ""
+  Write-Host "总计: $stopped 个已停 / $absent 个已无"
+}
+
 # Change 7: Bottom dispatch table
 switch ($Command) {
+  "up"       { Watchers-Up }
+  "start"    { Watchers-Up }
+  "down"     { Watchers-Down }
+  "stop"     { Watchers-Down }
+  "restart"  { Watchers-Down; Start-Sleep -Milliseconds 500; Watchers-Up }
   "status"   { Show-Status }
   "dispatch" { Dispatch-Agent $Target $Provider $Timeout }
   "wait"     { Wait-Agent $Target $WaitSeconds }
