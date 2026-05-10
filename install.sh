@@ -36,12 +36,38 @@ MARKER_END_V1="<!-- ai-agents-kit:end v1 -->"
 
 AUTO_YES=0
 MIGRATE_V1=0
-for arg in "$@"; do
-  case "$arg" in
+STACK_PRESET=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --yes|-y) AUTO_YES=1 ;;
     --migrate-v1) MIGRATE_V1=1 ;;
-    *) echo "未知参数: $arg"; exit 2 ;;
+    --stack) shift; STACK_PRESET="${1:-}" ;;
+    --stack=*) STACK_PRESET="${1#--stack=}" ;;
+    --help|-h)
+      cat <<'USAGE'
+用法: bash install.sh [--yes] [--stack <preset>] [--migrate-v1]
+
+选项:
+  --yes, -y          非交互, 用所有默认值 (空项目默认走 python-light 预设)
+  --stack <preset>   指定技术栈预设 (在 --yes 模式下尤其有用):
+                       python-light    FastAPI + Vite+React  (默认, 中小项目)
+                       python-poetry   FastAPI + Vite+React  (Poetry 包管)
+                       java-enterprise Spring Boot + Vite+React (重型企业 Java)
+                       java-gradle     Spring Boot Gradle + Vite+React
+                       go              Go+Gin + Vite+React
+                       node-fullstack  Fastify + Next.js
+  --migrate-v1       从 v1 旧目录结构迁移
+  --help, -h         显示本帮助
+
+示例:
+  bash install.sh                                   # 交互式 (会问规模 + 栈 + 命令)
+  bash install.sh --yes                             # 非交互, python-light 默认
+  bash install.sh --yes --stack java-enterprise     # 非交互, 强制 Java
+USAGE
+      exit 0 ;;
+    *) echo "未知参数: $1 (用 --help 看用法)"; exit 2 ;;
   esac
+  shift
 done
 
 echo "==========================================="
@@ -158,21 +184,54 @@ apply_preset() {
   echo "  🔍 ${side}: 识别到 ${tag} → ${stack}"
 }
 
+# apply_stack_preset <preset-name>
+# 把命名预设(--stack flag 接受的名字)展开成两次 apply_preset 调用
+# 默认 python-light = FastAPI + Vite+React (中小项目首选, 对齐 choseStock 实战栈)
+apply_stack_preset() {
+  case "$1" in
+    python|python-light|python-pip)
+      apply_preset python-pip    backend; apply_preset node-frontend frontend ;;
+    python-poetry)
+      apply_preset python-poetry backend; apply_preset node-frontend frontend ;;
+    java|java-enterprise|java-maven)
+      apply_preset maven-java    backend; apply_preset node-frontend frontend ;;
+    java-gradle)
+      apply_preset gradle-java   backend; apply_preset node-frontend frontend ;;
+    go)
+      apply_preset go            backend; apply_preset node-frontend frontend ;;
+    node|node-fullstack|fullstack-node)
+      apply_preset node-backend  backend; apply_preset nextjs        frontend ;;
+    "") return 1 ;;  # 空字符串调用方应跳过
+    *)
+      echo "  ⚠️  未知 --stack=$1, 支持: python-light|python-poetry|java-enterprise|java-gradle|go|node-fullstack" >&2
+      return 1 ;;
+  esac
+}
+
 choose_preset() {
   if [ $AUTO_YES -eq 1 ]; then return; fi
   echo
-  echo "📦 未检测到代码,选一个起手栈(后续仍可改 .aiagents/config.json):"
-  echo "  1) Java (Spring Boot 3) + React (Vite)     [推荐]"
-  echo "  2) Python (FastAPI)     + React (Vite)"
-  echo "  3) Go (Gin)             + React (Vite)"
-  echo "  4) Node.js (Fastify)    + Next.js"
-  echo "  9) 跳过,保持硬编码默认值"
+  echo "📦 未检测到代码 — 选一个起手栈 (后续仍可改 .aiagents/config.json):"
+  echo
+  echo "  ── 中小项目 / 个人项目 / 内部工具 (推荐轻量栈):"
+  echo "    1) Python FastAPI + Vite+React              [默认]  对齐 choseStock 实战栈"
+  echo "    2) Python FastAPI (Poetry) + Vite+React              用 poetry 管包"
+  echo "  ── 中型企业 / 团队协作:"
+  echo "    3) Go (Gin) + Vite+React                             高性能轻量"
+  echo "    4) Node.js (Fastify) + Next.js                       全栈 JS"
+  echo "  ── 重型企业 / 大型系统:"
+  echo "    5) Java (Spring Boot 3 / Maven) + Vite+React         传统重型 Java"
+  echo "    6) Java (Spring Boot 3 / Gradle) + Vite+React"
+  echo
+  echo "    9) 跳过 — 后续手动 ask 每一项"
   local c; read -r -p "选择 [1]: " c; c="${c:-1}"
   case "$c" in
-    1) apply_preset maven-java    backend; apply_preset node-frontend frontend ;;
-    2) apply_preset python-pip    backend; apply_preset node-frontend frontend ;;
-    3) apply_preset go            backend; apply_preset node-frontend frontend ;;
-    4) apply_preset node-backend  backend; apply_preset nextjs        frontend ;;
+    1) apply_stack_preset python-light    ;;
+    2) apply_stack_preset python-poetry   ;;
+    3) apply_stack_preset go              ;;
+    4) apply_stack_preset node-fullstack  ;;
+    5) apply_stack_preset java-enterprise ;;
+    6) apply_stack_preset java-gradle     ;;
     *) echo "  跳过预设" ;;
   esac
 }
@@ -190,15 +249,29 @@ echo "  frontend=$FRONTEND_DIR → $FE_TAG"
 if [ -z "${BACKEND_STACK:-}" ]  && [ "$BE_TAG" != empty ] && [ "$BE_TAG" != unknown ]; then apply_preset "$BE_TAG" backend;  fi
 if [ -z "${FRONTEND_STACK:-}" ] && [ "$FE_TAG" != empty ] && [ "$FE_TAG" != unknown ]; then apply_preset "$FE_TAG" frontend; fi
 
-if [ -z "${BACKEND_STACK:-}" ] && [ -z "${FRONTEND_STACK:-}" ]; then
-  choose_preset
+# 优先级: --stack flag > env vars > 工作目录探测 > choose_preset 交互 > --yes 模式空目录走 python-light 兜底
+if [ -n "$STACK_PRESET" ] && [ -z "${BACKEND_STACK:-}" ] && [ -z "${FRONTEND_STACK:-}" ]; then
+  echo "  🎯 应用 --stack=$STACK_PRESET"
+  apply_stack_preset "$STACK_PRESET" || true
 fi
 
-ask BACKEND_STACK     "后端技术栈"              "Spring Boot 3.x + JPA"
+if [ -z "${BACKEND_STACK:-}" ] && [ -z "${FRONTEND_STACK:-}" ]; then
+  if [ $AUTO_YES -eq 1 ]; then
+    # --yes 空目录: 默认走轻量预设 (Lane 偏好: 中小项目用 python, 不要重型 Spring)
+    echo "  🌱 --yes 模式空目录: 应用默认 python-light (FastAPI + Vite+React)"
+    echo "     如需其他栈请用 --stack <preset>, 见 --help"
+    apply_stack_preset python-light
+  else
+    choose_preset
+  fi
+fi
+
+# ask 兜底默认值: 也改成 FastAPI 系 (即使 STACK_PRESET 失败 / preset 没覆盖某项, 兜底也是轻量)
+ask BACKEND_STACK     "后端技术栈"              "FastAPI + SQLAlchemy"
 ask FRONTEND_STACK    "前端技术栈"              "Vite + React"
-ask BACKEND_TEST_CMD  "后端测试命令"            "./mvnw test"
+ask BACKEND_TEST_CMD  "后端测试命令"            "pytest"
 ask FRONTEND_TEST_CMD "前端测试命令"            "npm test"
-ask BACKEND_LINT_CMD  "后端 lint 命令"          "./mvnw spotless:check"
+ask BACKEND_LINT_CMD  "后端 lint 命令"          "ruff check ."
 ask FRONTEND_LINT_CMD "前端 lint 命令"          "npm run lint"
 ask API_CONTRACT_PATH "现有 API 契约路径(可空)" ""
 CODEX_BIN_DEFAULT="${CODEX_BIN:-codex}"

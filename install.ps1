@@ -20,6 +20,7 @@ param(
   [string]$CodexBin = "codex",
   [string]$CodexArgs = "--full-auto",
   [int]$CodexTimeout = 1800,
+  [string]$Stack = "",
   [switch]$Yes,
   [switch]$MigrateV1
 )
@@ -160,30 +161,79 @@ Write-Host "  frontend=$($script:FrontendDir) → $feTag"
 if ($beTag -ne "empty" -and $beTag -ne "unknown") { Apply-Preset $beTag "backend" }
 if ($feTag -ne "empty" -and $feTag -ne "unknown") { Apply-Preset $feTag "frontend" }
 
-if (-not $script:BackendStack -and -not $script:FrontendStack -and -not $Yes) {
-  Write-Host ""
-  Write-Host "📦 未检测到代码,选一个起手栈:"
-  Write-Host "  1) Java (Spring Boot 3) + React (Vite)     [推荐]"
-  Write-Host "  2) Python (FastAPI)     + React (Vite)"
-  Write-Host "  3) Go (Gin)             + React (Vite)"
-  Write-Host "  4) Node.js (Fastify)    + Next.js"
-  Write-Host "  9) 跳过"
-  $c = Read-Host "选择 [1]"
-  if (-not $c) { $c = "1" }
-  switch ($c) {
-    "1" { Apply-Preset "maven-java"   "backend"; Apply-Preset "node-frontend" "frontend" }
-    "2" { Apply-Preset "python-pip"   "backend"; Apply-Preset "node-frontend" "frontend" }
-    "3" { Apply-Preset "go"           "backend"; Apply-Preset "node-frontend" "frontend" }
-    "4" { Apply-Preset "node-backend" "backend"; Apply-Preset "nextjs"        "frontend" }
-    default { Write-Host "  跳过预设" }
+# Apply-StackPreset: 把 --Stack flag 接受的命名预设展开为两次 Apply-Preset
+function Apply-StackPreset([string]$Preset) {
+  switch ($Preset) {
+    { $_ -in @("python","python-light","python-pip") } {
+      Apply-Preset "python-pip"    "backend"; Apply-Preset "node-frontend" "frontend"; return
+    }
+    "python-poetry" {
+      Apply-Preset "python-poetry" "backend"; Apply-Preset "node-frontend" "frontend"; return
+    }
+    { $_ -in @("java","java-enterprise","java-maven") } {
+      Apply-Preset "maven-java"    "backend"; Apply-Preset "node-frontend" "frontend"; return
+    }
+    "java-gradle" {
+      Apply-Preset "gradle-java"   "backend"; Apply-Preset "node-frontend" "frontend"; return
+    }
+    "go" {
+      Apply-Preset "go"            "backend"; Apply-Preset "node-frontend" "frontend"; return
+    }
+    { $_ -in @("node","node-fullstack","fullstack-node") } {
+      Apply-Preset "node-backend"  "backend"; Apply-Preset "nextjs"        "frontend"; return
+    }
+    default {
+      Write-Host "  ⚠️  未知 -Stack '$Preset', 支持: python-light|python-poetry|java-enterprise|java-gradle|go|node-fullstack"
+    }
   }
 }
 
-$script:BackendStack    = Ask "后端技术栈"     $script:BackendStack    "Spring Boot 3.x + JPA"
+# 优先级: -Stack > env > 工作目录探测 > 交互 choose > -Yes 模式空目录 python-light 兜底
+if ($Stack -and -not $script:BackendStack -and -not $script:FrontendStack) {
+  Write-Host "  🎯 应用 -Stack '$Stack'"
+  Apply-StackPreset $Stack
+}
+
+if (-not $script:BackendStack -and -not $script:FrontendStack) {
+  if ($Yes) {
+    Write-Host "  🌱 -Yes 模式空目录: 应用默认 python-light (FastAPI + Vite+React)"
+    Write-Host "     如需其他栈请用 -Stack <preset>"
+    Apply-StackPreset "python-light"
+  } else {
+    Write-Host ""
+    Write-Host "📦 未检测到代码 — 选一个起手栈:"
+    Write-Host ""
+    Write-Host "  ── 中小项目 / 个人项目 / 内部工具 (推荐轻量栈):"
+    Write-Host "    1) Python FastAPI + Vite+React              [默认]  对齐 choseStock 实战栈"
+    Write-Host "    2) Python FastAPI (Poetry) + Vite+React              用 poetry 管包"
+    Write-Host "  ── 中型企业 / 团队协作:"
+    Write-Host "    3) Go (Gin) + Vite+React                             高性能轻量"
+    Write-Host "    4) Node.js (Fastify) + Next.js                       全栈 JS"
+    Write-Host "  ── 重型企业 / 大型系统:"
+    Write-Host "    5) Java (Spring Boot 3 / Maven) + Vite+React         传统重型 Java"
+    Write-Host "    6) Java (Spring Boot 3 / Gradle) + Vite+React"
+    Write-Host ""
+    Write-Host "    9) 跳过 — 后续手动 Ask 每一项"
+    $c = Read-Host "选择 [1]"
+    if (-not $c) { $c = "1" }
+    switch ($c) {
+      "1" { Apply-StackPreset "python-light"    }
+      "2" { Apply-StackPreset "python-poetry"   }
+      "3" { Apply-StackPreset "go"              }
+      "4" { Apply-StackPreset "node-fullstack"  }
+      "5" { Apply-StackPreset "java-enterprise" }
+      "6" { Apply-StackPreset "java-gradle"     }
+      default { Write-Host "  跳过预设" }
+    }
+  }
+}
+
+# Ask 兜底默认值: 也改成 FastAPI 系 (preset 失败 / 未覆盖某项时兜底是轻量)
+$script:BackendStack    = Ask "后端技术栈"     $script:BackendStack    "FastAPI + SQLAlchemy"
 $script:FrontendStack   = Ask "前端技术栈"     $script:FrontendStack   "Vite + React"
-$script:BackendTestCmd  = Ask "后端测试命令"   $script:BackendTestCmd  ".\mvnw test"
+$script:BackendTestCmd  = Ask "后端测试命令"   $script:BackendTestCmd  "pytest"
 $script:FrontendTestCmd = Ask "前端测试命令"   $script:FrontendTestCmd "npm test"
-$script:BackendLintCmd  = Ask "后端 lint 命令" $script:BackendLintCmd  ".\mvnw spotless:check"
+$script:BackendLintCmd  = Ask "后端 lint 命令" $script:BackendLintCmd  "ruff check ."
 $script:FrontendLintCmd = Ask "前端 lint 命令" $script:FrontendLintCmd "npm run lint"
 $ApiContractPath        = Ask "现有 API 契约路径(可空)" $ApiContractPath ""
 

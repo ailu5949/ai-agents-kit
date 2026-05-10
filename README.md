@@ -8,6 +8,58 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.3.0 — 默认轻量栈 + `--stack` 预设(2026-05-10)
+
+**痛点**: 装新空项目时默认 Spring Boot 3.x + JPA(重型 Java),Lane 反馈"我不只是 ERP / 大型项目,中小项目应该用 python 等轻量"。
+
+**修复**:
+
+1. **默认值全面轻量化** — `--yes` 模式空项目不再装 Spring Boot,默认 `python-light`:
+   - 后端: `FastAPI + SQLAlchemy` / `pytest` / `ruff check .`
+   - 前端: `Vite + React` / `npm test` / `npm run lint`
+   - 对齐 choseStock 实战栈
+
+2. **`--stack` flag** — 非交互模式可指定预设:
+
+```bash
+bash install.sh --yes                                # python-light (默认)
+bash install.sh --yes --stack python-poetry          # poetry 包管
+bash install.sh --yes --stack go                     # Go+Gin + React
+bash install.sh --yes --stack node-fullstack         # Fastify + Next.js
+bash install.sh --yes --stack java-enterprise       # 重型 Spring Boot Maven
+bash install.sh --yes --stack java-gradle           # Spring Boot Gradle
+```
+
+PowerShell 等价:
+```powershell
+pwsh install.ps1 -Yes -Stack python-light
+pwsh install.ps1 -Yes -Stack java-enterprise
+```
+
+3. **交互式问询重排 + 分组** — 不带 `--yes` 时按"中小 → 中型 → 重型"分三组列出,默认选项指向 Python(原默认是 Java):
+
+```
+📦 选一个起手栈:
+
+  ── 中小项目 / 个人项目 / 内部工具 (推荐轻量栈):
+    1) Python FastAPI + Vite+React              [默认]  对齐 choseStock 实战栈
+    2) Python FastAPI (Poetry) + Vite+React              用 poetry 管包
+  ── 中型企业 / 团队协作:
+    3) Go (Gin) + Vite+React                             高性能轻量
+    4) Node.js (Fastify) + Next.js                       全栈 JS
+  ── 重型企业 / 大型系统:
+    5) Java (Spring Boot 3 / Maven) + Vite+React         传统重型 Java
+    6) Java (Spring Boot 3 / Gradle) + Vite+React
+```
+
+**改动文件**:
+- `install.sh`: `--stack` 解析 + `apply_stack_preset()` helper + ask 默认值 + choose_preset 重排
+- `install.ps1`: `-Stack` 参数 + `Apply-StackPreset` + Ask 默认值 + 交互菜单重排
+- `templates/.claude/agents.conf`: KV 默认值改 FastAPI 系
+- `--help` / `-h` flag(install.sh)显示完整 stack 选项
+
+**已装项目不影响**: install.sh 检测到 v3 schema config.json 时跳过 rewrite(`[install] config.json is already v3 -- skipping rewrite`),choseStock 等已安装项目不会被重置。
+
 ## v3.2.2 — logs 默认过滤 stream-json 残留(2026-05-10)
 
 **痛点**: v3.2.1 logs follow 时,如果 pretty log 里混有 stream-json 原始 JSON Lines(v3.0.1 时代旧任务残留 / 用户混用),tail -F 会刷出大量 `{"type":"system",...}` 一行 1KB+ 的难读内容。
