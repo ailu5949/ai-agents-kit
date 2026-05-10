@@ -8,13 +8,37 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.0.2 — claude log 人眼友好版(2026-05-10)
+
+**v3.0.1 副作用**: stream-json 让 stdout 变 JSON Lines,Lane tail log 直接看是 JSON,人眼读累。
+
+**修复**: 新增 `templates/.aiagents/bin/providers/_stream_json_pretty.py`,在 runner pipeline 内**实时**把 JSON Lines 转人眼版(`💬 文本` / `🔧 工具调用` / `✅ result · cost · turns`)。
+
+双 log 设计:
+- `.aiagents/logs/<be|fe>_<date>.log` — 人眼版(Lane / 主 Claude tail 这个)
+- `.aiagents/logs/<be|fe>_<date>.log.raw` — 原始 JSON Lines(audit / debug / jq 后处理)
+
+实测样例(本地 stream → pretty 转换):
+```
+🟢 [init] session=abc12345 tools=6
+💬 我先看一下 trading_plan_service.py 的当前结构
+🔧 Read app/services/trading_plan_service.py
+✓ tool_result def existing_function(): ⏎     pass ⏎
+🔧 Edit app/services/trading_plan_service.py
+🔧 Bash pytest tests/test_trading_plan.py -v
+✓ tool_result 5 passed in 0.3s
+✅ result · cost=$0.42 · turns=18 · success
+```
+
+非 JSON 行(banner / runtime error)和未知 type 原样 pass,容错友好。codex 路径完全不动(继续走 filter-output.sh awk 过滤)。
+
 ## v3.0.1 — claude provider 流式输出(2026-05-10)
 
 **痛点**: 副 agent 切到 claude 后,Lane / 主 Claude 卡在 watcher "🔔 检测到 backend 新任务" 提示长时间黑盒,无法判断 claude 在跑还是 hang。原因:`claude -p` 默认非流式,subprocess 跑完才一次性输出。
 
-**修复**: `templates/.aiagents/bin/providers/claude.sh` `provider_build_cmd` 加 `--output-format stream-json --verbose`,每个工具调用 / 文本块实时进 log,主 Claude 监控 log tail / events.jsonl 即可看到 claude 子会话进度节点(Read / Edit / Bash / Write 调用)。
+**修复**: `templates/.aiagents/bin/providers/claude.sh` `provider_build_cmd` 加 `--output-format stream-json --verbose`,每个工具调用 / 文本块实时进 log。
 
-**对已有 v3.0.0 项目升级**: 重跑 `install.sh` 即可(providers/*.sh 直接覆盖,不破坏其他配置)。
+**对已有 v3.0.x 项目升级**: 重跑 `install.sh` 即可(providers/*.{sh,py} 直接覆盖,不破坏其他配置)。
 
 ## v3 主要变化(2026-05-10)
 
