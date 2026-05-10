@@ -8,6 +8,20 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.0.4 — 副 agent 超时三层加固(2026-05-10)
+
+**痛点**: 副 agent 1800s timeout 时,主 Claude 不知道 work 是否已落 / claude 是否还在跑 / 是否需要重派 — 容易误判直接重派,让 codex/claude 重做浪费 token(memory bugs.md #25/#26/#29 三次复现)。
+
+**三层加固**:
+
+1. **adapter 自动恢复** — `_common.sh` `default_evaluate_completion` timeout 时检测 git status:work 已落(commit/dirty)→ 自动改判 `stale`(直接进 `done-awaiting-review` 路径),不再误报 timeout。13/13 单元测试覆盖。
+
+2. **Stop hook 自动诊断** — `stop-notify.sh` 检测到 `<agent>_timeout` signal 时,自动跑 `git status` / `git log -1` / `tail log_<date>.log` 并把结果**注入** Stop hook reason。主 Claude 看到 timeout 提示时已附诊断,无需手动查。
+
+3. **CLAUDE.md SOP** — 加 § 副 agent 超时诊断流程 节,主 Claude 决策树覆盖 4 种 timeout 子场景(work 已落 / 还在跑 / 真失败 / 真 hang),严禁"看到 timeout 直接重派"。
+
+**生效路径**: timeout-with-work-landed 在 adapter 层自动转 stale → 主 Claude 走标准审查;真 timeout(work 没落)经 hook 诊断后走 SOP 决策树。
+
 ## v3.0.3 — log 默认极简(只动作信号,不复述细节)— 2026-05-10
 
 **痛点反思**: v3.0.2 把 JSON 转人眼版后,Lane 反馈"我只想知道 claude 在动还是 hang,不需要看 old_string/new_string/CoT 思考"。

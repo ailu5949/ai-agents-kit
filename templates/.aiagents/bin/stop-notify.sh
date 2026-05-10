@@ -39,8 +39,58 @@ for kind in backend frontend; do
   fi
   if [ -f "$timeout_file" ]; then
     reason="$(head -c 200 "$timeout_file" 2>/dev/null | tr '\n' ' ')"
-    events+="- ⏰ ${kind} Codex 超时(可能网络卡死): ${reason}"$'\n'
-    events+="  → 建议告知用户检查 watcher 终端输出,确认网络恢复后重新 /dispatch-${kind}"$'\n'
+    events+="- ⏰ ${kind} 超时: ${reason}"$'\n'
+
+    # 自动诊断(主 Claude 看到 timeout 时不用再手动跑这些命令)
+    # 1. agent 工作目录 git status
+    agent_dir_rel=""
+    if [ -f "$ROOT/.aiagents/config.json" ]; then
+      _python_diag=""
+      for py in python python3; do
+        if command -v "$py" >/dev/null 2>&1 && "$py" -c "pass" >/dev/null 2>&1; then
+          _python_diag="$py"; break
+        fi
+      done
+      if [ -n "$_python_diag" ]; then
+        agent_dir_rel="$("$_python_diag" -c "
+import json
+d = json.load(open(r'$ROOT/.aiagents/config.json', encoding='utf-8'))
+ab = d.get('agents') or {}
+print((ab.get('$kind') or {}).get('dir') or (d.get('$kind') or {}).get('dir') or '')
+" 2>/dev/null || true)"
+      fi
+    fi
+    if [ -n "$agent_dir_rel" ] && [ -d "$ROOT/$agent_dir_rel" ]; then
+      git_status="$(cd "$ROOT/$agent_dir_rel" && git status --porcelain 2>/dev/null | head -8)"
+      git_latest="$(cd "$ROOT/$agent_dir_rel" && git log -1 --oneline 2>/dev/null || echo '(no commits)')"
+      events+="  └ 工作目录: $agent_dir_rel"$'\n'
+      events+="  └ HEAD: $git_latest"$'\n'
+      if [ -z "$git_status" ]; then
+        events+="  └ git status: 干净(无未提交改动)"$'\n'
+      else
+        events+="  └ git status (工作树有改动):"$'\n'
+        events+="$(echo "$git_status" | sed 's/^/      /')"$'\n'
+      fi
+    fi
+
+    # 2. log 末尾 10 行(claude 走 pretty 后的 log,人眼版)
+    abbr=be
+    [ "$kind" = frontend ] && abbr=fe
+    today="$(date +%Y%m%d)"
+    log_main="$ROOT/.aiagents/logs/${abbr}_${today}.log"
+    if [ -f "$log_main" ]; then
+      log_tail="$(tail -10 "$log_main" 2>/dev/null)"
+      events+="  └ log 末尾 10 行 ($abbr):"$'\n'
+      events+="$(echo "$log_tail" | sed 's/^/      /')"$'\n'
+    fi
+
+    # 3. 主 Claude 决策树提示
+    events+="  └ 主 Claude 决策(必走超时诊断 SOP):"$'\n'
+    events+="      • git 有改动 / 新 commit + log 末尾正常 → 工作已落, 代 commit + 走 Karpathy 审查 + verify gate"$'\n'
+    events+="      • git 干净 + log 末尾仍在打印动作行(🔧/💬) → claude/codex 仍在跑, 等下一轮 Stop hook"$'\n'
+    events+="      • git 干净 + log 末尾报错(429/502/sandbox/EOF) → 真 failed, /retry-other-provider 切对家或重派"$'\n'
+    events+="      • 严禁直接重派(work 已落会让对方重做, 浪费 token)"$'\n'
+
     mv "$timeout_file" "$SIG_DIR/.consumed_${kind}_timeout_${ts}" 2>/dev/null || rm -f "$timeout_file"
   fi
 done

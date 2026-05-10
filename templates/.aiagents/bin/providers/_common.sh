@@ -30,6 +30,11 @@ default_evaluate_completion() {
   fi
 
   if [ "$rc" -eq 124 ]; then
+    # Timeout — 检查 work 是否已落,已落则走 stale(主 Claude 可代 commit + 审查),否则真 timeout
+    # (memory bugs.md #25/#26/#29: agent-runner 1800s timeout 但 codex/claude 实际工作已落)
+    if [ "$commit_advanced" -eq 1 ] || [ "$working_tree_changed" -eq 1 ]; then
+      echo "stale"; return
+    fi
     echo "timeout"; return
   fi
   if [ "$rc" -eq 0 ] && [ "$commit_advanced" -eq 1 ]; then

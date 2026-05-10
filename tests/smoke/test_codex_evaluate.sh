@@ -28,8 +28,13 @@ echo "windows sandbox: runner error" > "$LOG_FILE"
 assert_eq "$(RC=0 COMMIT_BEFORE=aaa COMMIT_AFTER=aaa provider_evaluate_completion)" "failed" "rc=0 + sandbox log → failed"
 > "$LOG_FILE"
 
-# Case 3: rc=124 → timeout
-assert_eq "$(RC=124 provider_evaluate_completion)" "timeout" "rc=124 → timeout"
+# Case 3: rc=124 + clean tree + no commit → timeout
+> "$LOG_FILE"; echo "" > "$SB"; echo "" > "$SA"
+assert_eq "$(RC=124 COMMIT_BEFORE=aaa COMMIT_AFTER=aaa provider_evaluate_completion)" "timeout" "rc=124 + clean → timeout"
+
+# Case 3b: rc=124 + work landed → stale (主 Claude 代 commit + 审查)
+> "$LOG_FILE"; echo "" > "$SB"; echo " M file.py" > "$SA"
+assert_eq "$(RC=124 COMMIT_BEFORE=aaa COMMIT_AFTER=aaa provider_evaluate_completion)" "stale" "rc=124 + tree changed → stale"
 
 # Case 4: rc=1 + 502 + clean tree → failed
 echo "ERROR: unexpected status 502 Bad Gateway" > "$LOG_FILE"

@@ -165,6 +165,31 @@ state=ready-for-human ← Lane 拍板:收下 / 打回 / 推迟
 
 **主 Claude 运维边界**: 跑测试 / 跑接口 / kill 进程 / 起 server **可做**(运维操作);Edit / Write 业务代码 **严禁**(由 settings.json deny 强制)。
 
+## ⛔ 副 agent 超时诊断流程 (Timeout Triage SOP)
+
+**触发**: state.<agent>.state == "timeout"(由 Stop hook 注入"⏰ ${kind} 超时"提示;Stop hook 已自动跑诊断附在 reason 里,主 Claude 直接读)。
+
+**自动诊断已注入**(主 Claude 不用再手动跑):
+- 工作目录 + HEAD commit
+- git status(工作树是否有改动)
+- log 末尾 10 行
+- 决策树提示
+
+**主 Claude 决策树**:
+
+| 现象 | 解读 | 行动 |
+|---|---|---|
+| git 有未提交改动 / 新 commit + log 末尾正常 | work 已落, timeout 是收尾延迟(adapter 已自动走 stale 路径,但若仍报 timeout 需手动诊断) | **代 commit**(`cd <agent_dir> && git add <files> && git commit -m "..."`)+ 走 Karpathy 审查 + verify gate |
+| git 干净 + log 末尾仍在打印动作行(🔧/💬) | claude/codex 仍在跑, runner 1800s 内部 timeout 截断 | 等下一轮 Stop hook(子进程会继续 → 写 done 信号)/ 或敲 `/dispatch-<agent>` 重派让 timeout 重置 |
+| git 干净 + log 末尾报错(429 / 502 / sandbox / EOF / connection abort) | 真 failed, provider 异常断开 | `/retry-other-provider <agent>` 切对家(claude → codex 或反向),走 handover 接续 |
+| git 干净 + log 末尾完全卡住 N 分钟无新输出 | 真 hang(网络 / provider CLI 死) | 检查 watcher 进程 `bash agentctl.sh status` worker 列, 如 stale 重启 watcher;`/dispatch-<agent>` 重派 |
+
+**严禁**:
+- ❌ 看到 timeout 不查 hook 注入诊断, 直接重派 — 如果 work 已落, 重派会让对方重做(浪费 token)
+- ❌ 主 Claude 自己改业务码"代劳" — 仍走 04 修复 → 派编码 agent 流程(由 settings.json deny 强制)
+
+**关联自动恢复**: `_common.sh` `default_evaluate_completion` 在 timeout 时已自动检测 work-landed → 改判 stale, 信号自动转为 done-awaiting-review(memory bugs.md #25/#26/#29 SOP 内化)。所以"git 有改动"的 timeout 在 v3.0.4+ 通常**不会再触发** state=timeout, 而是直接 state=done-awaiting-review。仅 adapter 漏判的边缘情况才进本 SOP。
+
 ## ⛔ 切换编码 agent 接续流程 (Handover 机制)
 
 **触发场景**: 编码 agent failed,且失败原因属"换家可能解决"类(API 限流 / token 配额 / sandbox 异常 / 网络抖动)。

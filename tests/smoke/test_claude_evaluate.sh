@@ -24,9 +24,13 @@ assert_eq "$(RC=0 COMMIT_BEFORE=aaa COMMIT_AFTER=bbb provider_evaluate_completio
 echo "Waiting for input: continue?" > "$LOG_FILE"
 assert_eq "$(RC=0 COMMIT_BEFORE=aaa COMMIT_AFTER=aaa provider_evaluate_completion)" "failed" "rc=0 + prompt → failed"
 
-# Case 3: rc=124 → timeout
-> "$LOG_FILE"
-assert_eq "$(RC=124 provider_evaluate_completion)" "timeout" "rc=124 → timeout"
+# Case 3: rc=124 + clean → timeout
+> "$LOG_FILE"; echo "" > "$SB"; echo "" > "$SA"
+assert_eq "$(RC=124 COMMIT_BEFORE=aaa COMMIT_AFTER=aaa provider_evaluate_completion)" "timeout" "rc=124 + clean → timeout"
+
+# Case 3b: rc=124 + work landed → stale
+> "$LOG_FILE"; echo "" > "$SB"; echo " M file.py" > "$SA"
+assert_eq "$(RC=124 COMMIT_BEFORE=aaa COMMIT_AFTER=aaa provider_evaluate_completion)" "stale" "rc=124 + tree changed → stale"
 
 # Case 4: rc=1 + rate limit → failed
 echo "Error: 429 rate limit exceeded" > "$LOG_FILE"
