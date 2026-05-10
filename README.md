@@ -8,6 +8,35 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.0.3 — log 默认极简(只动作信号,不复述细节)— 2026-05-10
+
+**痛点反思**: v3.0.2 把 JSON 转人眼版后,Lane 反馈"我只想知道 claude 在动还是 hang,不需要看 old_string/new_string/CoT 思考"。
+
+**修复**: `_stream_json_pretty.py` 加 `STREAM_VERBOSE` env 控制:
+
+| 模式 | 输出 |
+|---|---|
+| **默认 (minimal)** | 🟢 init / 🔧 ToolName + 短目标(文件名 / 命令头一个 token)/ ❌ tool error / ✅ result |
+| **STREAM_VERBOSE=1** | 加上 💬 文本块 / 🤔 thinking / ✓ 成功 tool_result 内容 |
+
+实测样例:
+
+```
+默认:
+🟢 [init] session=abc12345 tools=6
+🔧 Read trading_plan_service.py
+🔧 Edit trading_plan_service.py
+🔧 Bash pytest
+🔧 Bash git
+❌ tool error: fatal: not a git repo
+✅ result · cost=$0.42 · turns=18 · success
+```
+
+文件名只显示 basename, Bash 只显示命令头一个 token。Edit 完全不显示 old_string/new_string。
+设 `STREAM_VERBOSE=1` 调试时再展开细节。
+
+raw JSON 始终落 `.log.raw`(无论 minimal / verbose),audit / 详查随时可用。
+
 ## v3.0.2 — claude log 人眼友好版(2026-05-10)
 
 **v3.0.1 副作用**: stream-json 让 stdout 变 JSON Lines,Lane tail log 直接看是 JSON,人眼读累。

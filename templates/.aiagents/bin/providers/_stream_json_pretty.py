@@ -2,15 +2,21 @@
 """Stream filter: claude --output-format stream-json --verbose → human-readable text.
 
 stdin: JSON Lines (claude stream-json) interleaved with possibly non-JSON lines (banners, errors).
-stdout: friendly one-line-per-event format ("💬 ..." / "🔧 Tool ..." / "✅ result ...").
+stdout: 默认 minimal 模式 — 只输出动作信号(🔧 工具调用 / 🟢 init / ✅ result / ❌ tool error)。
+
+设 STREAM_VERBOSE=1 解锁详细模式 — 加 💬 思考文本 + ✓ tool_result(成功)+ 🤔 thinking 块。
 
 Non-JSON lines pass through unchanged (容错 — banner / runtime error / etc 不丢).
 Unknown JSON event types pass through as raw JSON (debug-friendly).
 
-Used by claude.sh provider_build_cmd to render claude subprocess stdout to log.
-Codex provider doesn't use this (codex emits human text already, processed by filter-output.sh).
+设计意图: Lane 关心"claude 在动还是 hang",不关心 old_string/new_string/CoT 思考。
+默认极简,需要 debug 时开 verbose。
+
+Used by claude.sh provider_build_cmd. Codex provider doesn't use this (走 filter-output.sh awk).
 """
-import sys, json
+import sys, json, os
+
+VERBOSE = os.environ.get('STREAM_VERBOSE') in ('1', 'true', 'yes')
 
 # Force UTF-8 stdin/stdout/stderr regardless of Windows terminal codec (emoji-safe + CJK-safe).
 # Python 3.7+ supports reconfigure; runner also exports PYTHONUTF8=1 / PYTHONIOENCODING=utf-8 as belt-and-suspenders.
@@ -20,6 +26,30 @@ try:
     sys.stderr.reconfigure(encoding='utf-8')
 except Exception:
     pass
+
+def _tool_brief(name, inp):
+    """Return short target hint for a tool_use, or '' if no useful brief."""
+    if not isinstance(inp, dict):
+        return str(inp)[:80]
+    # Prefer specific keys for known tools
+    if 'file_path' in inp:
+        # Show only basename for brevity
+        path = str(inp['file_path'])
+        return path.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
+    if 'command' in inp:
+        # First "word" of the command (e.g. "pytest" / "git" / "npm")
+        cmd = str(inp['command']).strip()
+        return cmd.split(None, 1)[0] if cmd else ''
+    if 'pattern' in inp:
+        return f"`{str(inp['pattern'])[:40]}`"
+    if 'description' in inp:
+        return str(inp['description'])[:50]
+    if 'url' in inp:
+        return str(inp['url'])[:60]
+    if 'query' in inp:
+        return f"q={str(inp['query'])[:40]}"
+    return ''
+
 
 def fmt(d):
     """Return list[str] of formatted lines for one parsed JSON object, or None to fall through."""
@@ -31,52 +61,59 @@ def fmt(d):
             sid = (d.get('session_id') or '?')[:8]
             tools = d.get('tools') or []
             out.append(f"🟢 [init] session={sid} tools={len(tools)}")
-        else:
+        elif VERBOSE:
             out.append(f"🟢 [system/{sub}]")
     elif t == 'assistant':
         msg = d.get('message') or {}
         for c in msg.get('content') or []:
             ct = c.get('type')
             if ct == 'text':
-                txt = (c.get('text') or '').rstrip()
-                if txt:
-                    out.append(f"💬 {txt}")
+                # Default minimal: silent (CoT 噪音多)
+                # Verbose: show full text
+                if VERBOSE:
+                    txt = (c.get('text') or '').rstrip()
+                    if txt:
+                        out.append(f"💬 {txt}")
             elif ct == 'tool_use':
                 name = c.get('name', '?')
                 inp = c.get('input') or {}
-                # Compact preview of tool input (truncated)
-                if isinstance(inp, dict):
-                    keys = list(inp.keys())
-                    if 'file_path' in inp:
-                        snippet = str(inp['file_path'])
-                    elif 'command' in inp:
-                        snippet = str(inp['command'])[:140]
-                    elif 'pattern' in inp:
-                        snippet = f"pattern={inp['pattern']!r}"
-                    else:
-                        snippet = ' '.join(f"{k}={str(inp[k])[:40]}" for k in keys[:3])
+                brief = _tool_brief(name, inp)
+                if brief:
+                    out.append(f"🔧 {name} {brief}")
                 else:
-                    snippet = str(inp)[:140]
-                out.append(f"🔧 {name} {snippet}")
+                    out.append(f"🔧 {name}")
             elif ct == 'thinking':
-                txt = (c.get('thinking') or '').rstrip()
-                if txt:
-                    # Show first 200 chars of thinking
-                    out.append(f"🤔 {txt[:200]}{'...' if len(txt) > 200 else ''}")
+                # Default minimal: 不输出 thinking (claude 内部 CoT 与 Lane 无关)
+                # Verbose: 显示前 200 字
+                if VERBOSE:
+                    txt = (c.get('thinking') or '').rstrip()
+                    if txt:
+                        out.append(f"🤔 {txt[:200]}{'...' if len(txt) > 200 else ''}")
     elif t == 'user':
         msg = d.get('message') or {}
         for c in msg.get('content') or []:
             if c.get('type') == 'tool_result':
                 err = c.get('is_error') or False
-                content = c.get('content', '')
-                if isinstance(content, list):
-                    content = ''.join(
-                        x.get('text', str(x)) if isinstance(x, dict) else str(x)
-                        for x in content
-                    )
-                snippet = str(content)[:100].replace('\n', ' ⏎ ')
-                marker = "❌ tool_result" if err else "✓ tool_result"
-                out.append(f"{marker} {snippet}{'...' if len(str(content)) > 100 else ''}")
+                # Default minimal: 只显示 error, 成功 result 静默
+                # Verbose: 显示成功 result 内容前 100 字
+                if err:
+                    content = c.get('content', '')
+                    if isinstance(content, list):
+                        content = ''.join(
+                            x.get('text', str(x)) if isinstance(x, dict) else str(x)
+                            for x in content
+                        )
+                    snippet = str(content)[:100].replace('\n', ' ⏎ ')
+                    out.append(f"❌ tool error: {snippet}")
+                elif VERBOSE:
+                    content = c.get('content', '')
+                    if isinstance(content, list):
+                        content = ''.join(
+                            x.get('text', str(x)) if isinstance(x, dict) else str(x)
+                            for x in content
+                        )
+                    snippet = str(content)[:100].replace('\n', ' ⏎ ')
+                    out.append(f"✓ tool_result {snippet}{'...' if len(str(content)) > 100 else ''}")
     elif t == 'result':
         cost = d.get('total_cost_usd', '?')
         turns = d.get('num_turns', '?')
