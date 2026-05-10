@@ -98,7 +98,12 @@ refresh_state() {
   bash "$BIN_DIR/agentctl.sh" status >/dev/null 2>&1 || true
 }
 
+_cleanup_done=0
 cleanup() {
+  # Idempotent: trap fires on EXIT, INT, TERM and may be invoked multiple times by signal stacking.
+  # Without this guard, events.jsonl gets 8-10 watcher-stopped rows on a single watcher death.
+  [ "$_cleanup_done" = "1" ] && return 0
+  _cleanup_done=1
   write_worker "stopped" || true
   append_event "watcher-stopped" "watcher 已停止" || true
   refresh_state

@@ -780,3 +780,20 @@ echo
 echo "  手册: $PROJECT_ROOT/docs/ai-agents/README.md"
 echo "  配置: $CFG_JSON  +  $CONF (KV 兼容)"
 echo
+
+# ---------- v3.1 桌面通知提示 ----------
+if [ "$(uname -s 2>/dev/null)" != "Linux" ] && [ "$(uname -s 2>/dev/null | head -c 6)" != "Darwin" ]; then
+  echo "  🔔 桌面通知 (v3.1+):"
+  if command -v pwsh >/dev/null 2>&1; then
+    if pwsh -NoProfile -Command "Get-Module -ListAvailable BurntToast | Select-Object -First 1" 2>/dev/null | grep -q BurntToast; then
+      echo "    ✅ BurntToast 已装,任务完成会弹漂亮 Toast"
+    else
+      echo "    ✅ NotifyIcon 兜底可用 (任务完成会弹系统托盘气泡)"
+      echo "    💡 想要更漂亮的 Toast? 一次性安装 BurntToast:"
+      echo "       pwsh -Command \"Install-Module BurntToast -Scope CurrentUser -Force\""
+    fi
+  else
+    echo "    ⚠️  pwsh 不可用,通知层关闭 (主流程仍正常,只是 Lane 离线时无提醒)"
+  fi
+  echo
+fi

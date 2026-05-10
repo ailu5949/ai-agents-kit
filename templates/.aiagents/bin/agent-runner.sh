@@ -105,6 +105,23 @@ fi
 [ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "codex" ] && PROVIDER_ARGS="--dangerously-bypass-approvals-and-sandbox"
 [ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "claude" ] && PROVIDER_ARGS="--dangerously-skip-permissions"
 
+# ---------- 桌面通知 (v3.1) — Lane 离线时唯一的回路 ----------
+# 设计:
+#   - background spawn (8s sleep 不阻塞 runner)
+#   - 失败静默 (没 pwsh / 没 BurntToast / NotifyIcon 异常都不影响主流程)
+#   - 仅 Windows 触发 (其他系统 pwsh 缺则跳过)
+notify_toast() {
+  local status="$1" message="${2:-}"
+  local script="$BIN_DIR/notify-toast.ps1"
+  [ -f "$script" ] || return 0
+  command -v pwsh >/dev/null 2>&1 || return 0
+  local proj
+  proj="$(basename "$ROOT" 2>/dev/null || echo project)"
+  (pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" \
+      -Agent "$AGENT" -Status "$status" -Message "$message" -Project "$proj" \
+      >/dev/null 2>&1 &) || true
+}
+
 # ---------- state / event 工具 ----------
 write_state() {
   local running_state="$1"
@@ -380,12 +397,14 @@ case "$COMPLETION" in
     : > "$SIG_DIR/${AGENT}_done"
     event "done" "${PROVIDER} 完成 (rc=$rc)"
     write_state "done-awaiting-review"
+    notify_toast "done" "${PROVIDER} 完成, 等审查"
     exit 0
     ;;
   timeout)
     echo "$AGENT 超时 @ $(date -Iseconds) (timeout=${TIMEOUT_SECONDS}s, provider=$PROVIDER)" > "$SIG_DIR/${AGENT}_timeout"
     event "timeout" "${PROVIDER} 超时 ${TIMEOUT_SECONDS}s"
     write_state "timeout"
+    notify_toast "timeout" "${PROVIDER} ${TIMEOUT_SECONDS}s 未完成"
     exit 124
     ;;
   stale)
@@ -400,12 +419,14 @@ case "$COMPLETION" in
     : > "$SIG_DIR/${AGENT}_done"
     event "done" "${PROVIDER} stale-recovered (rc=$rc, work landed)"
     write_state "done-awaiting-review"
+    notify_toast "stale" "${PROVIDER} timeout 但 work 已落, 代 commit + 审查"
     exit 0
     ;;
   *)
     echo "$AGENT 失败 rc=$rc completion=$COMPLETION provider=$PROVIDER @ $(date -Iseconds)" > "$SIG_DIR/${AGENT}_failed"
     event "failed" "${PROVIDER} 失败 rc=$rc completion=$COMPLETION"
     write_state "failed"
+    notify_toast "failed" "${PROVIDER} rc=$rc completion=$COMPLETION"
     exit "${rc:-1}"
     ;;
 esac

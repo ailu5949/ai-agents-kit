@@ -8,6 +8,33 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.1.0 — 桌面通知层 + watcher cleanup 修复(2026-05-10)
+
+**痛点**: 主 Claude 离线时(用户切到别的项目 / Claude Code 关闭),编码 agent 完成 / 失败 / 超时**没有任何通知**。Stop hook 只在对应项目的 Claude Code 会话里 turn 结束时触发,Lane 不在 → signal 堆积无人处理。choseStock 实战中 backend 完成 6 小时无人审查就是这个问题。
+
+**实现**:
+
+1. **`notify-toast.ps1`(双层兜底)**:
+   - **Layer A**: BurntToast(若安装,体验最佳,ActionCenter 留底)
+   - **Layer B**: NotifyIcon BalloonTip(Win10/11 原生,零依赖兜底)
+   - 失败静默(没 pwsh / 抛异常都不影响主流程)
+
+2. **agent-runner 集成**: done / failed / timeout / stale 四个出口都 background-spawn 一次 toast,不阻塞 runner。提示包含项目名 + agent + status + 下一步建议(如 "回到 Claude Code 审查")。
+
+3. **install.sh 提示**: 安装结尾自动检测 BurntToast 是否存在,给 Lane 升级命令(`Install-Module BurntToast -Scope CurrentUser -Force`),不强制装。
+
+**顺手修复**:
+
+- `watch-agent.sh` cleanup trap 重复触发 bug:trap 在 EXIT/INT/TERM 都调一次,旧版无幂等 guard,一次 watcher 死亡会写 8-10 条 `watcher-stopped` 事件。加 `_cleanup_done` flag 后只写一条。
+
+**Lane 行为变化**:
+
+| 场景 | v3.0.4 之前 | v3.1.0 |
+|---|---|---|
+| backend 完成,Claude Code 关闭 | 无人知道,signal 堆积 | 右下角弹 toast `[choseStock] backend done — 回到 Claude Code 审查` |
+| frontend 失败 | 主 Claude 离线时无感 | 弹 `[choseStock] frontend failed — 看 events.jsonl + log` |
+| timeout 1800s | 无感 | 弹 `[choseStock] backend timeout — 看 stop-notify 注入诊断` |
+
 ## v3.0.4 — 副 agent 超时三层加固(2026-05-10)
 
 **痛点**: 副 agent 1800s timeout 时,主 Claude 不知道 work 是否已落 / claude 是否还在跑 / 是否需要重派 — 容易误判直接重派,让 codex/claude 重做浪费 token(memory bugs.md #25/#26/#29 三次复现)。
