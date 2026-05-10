@@ -97,6 +97,9 @@ done
 
 # 检测 state.json 中的 ready-for-human 状态(由 verify gate 通过 / release-without-verify 触发)
 # claude-verifying 不触发 hook(那是主 Claude 自己正在跑 verify,不要打断)
+# sentinel 去重: ready-for-human 首次写 .notified_${kind}_ready_for_human, 后续 turn 静默;
+#               state 离开 ready-for-human 时清 sentinel, 下次重进可再次通知。
+# 历史 bug: 不去重时 BE+FE 双 ready-for-human × 4 turns = 8 次重复通知(choseStock P11 实战暴露)。
 if [ -f "$STATE_FILE" ]; then
   for kind in backend frontend; do
     cur_state="$(
@@ -109,8 +112,15 @@ except Exception:
     pass
 " 2>/dev/null || true
     )"
+    notified_file="$SIG_DIR/.notified_${kind}_ready_for_human"
     if [ "$cur_state" = "ready-for-human" ]; then
-      events+="- 🟢 ${kind} verify 全过,等待 Lane 决策(收下 / 打回 / 推迟)"$'\n'
+      if [ ! -f "$notified_file" ]; then
+        events+="- 🟢 ${kind} verify 全过,等待 Lane 决策(收下 / 打回 / 推迟)"$'\n'
+        touch "$notified_file"
+      fi
+    else
+      # state 不在 ready-for-human(idle/dispatched/running/done-awaiting-review/...) → 清 sentinel
+      rm -f "$notified_file"
     fi
   done
 fi
