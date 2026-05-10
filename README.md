@@ -8,6 +8,51 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.2.1 — 日志监控子命令 (logs)(2026-05-10)
+
+**痛点**: v3.2.0 一键 `up` 后 watcher 全后台,Lane 看不到实时执行,要手动 `tail -F .aiagents/logs/be_20260510.log`(还要每天换日期),不友好。
+
+**修复**: 加 `logs` 子命令,封装常见监控:
+
+```bash
+# 无参数 — 列所有日志路径 + 末尾 5 行快照(不 follow)
+bash .aiagents/bin/agentctl.sh logs
+
+# follow 单个 agent(默认 pretty 流,即 codex/claude 实时输出)
+bash .aiagents/bin/agentctl.sh logs backend
+bash .aiagents/bin/agentctl.sh logs frontend
+
+# 同时跟 backend + frontend(GNU tail -F 多文件,自带 banner 区分)
+bash .aiagents/bin/agentctl.sh logs both
+
+# 跟特定 kind:
+bash .aiagents/bin/agentctl.sh logs backend worker  # watcher 自身 stdout (验 watcher 是否还活)
+bash .aiagents/bin/agentctl.sh logs backend raw     # claude 原始 JSON Lines (debug)
+```
+
+**三种 log kind**:
+
+| kind | 文件 | 用途 |
+|---|---|---|
+| `pretty`(默认) | `be_<date>.log` / `fe_<date>.log` | codex/claude 人眼可读流 — **主要监控点** |
+| `worker` | `worker-{backend,frontend}.log` | watcher 自身 echo("🔔 检测到任务" 等) — 验 watcher 还活着 |
+| `raw` | `be_<date>.log.raw` | claude `stream-json` 原始 JSON Lines(v3.0.2+ 双 log 启用)— debug 兜底 |
+
+**Cursor 多 bash 协作典型布局**:
+
+```
+窗口 1: bash agentctl.sh up                 # 起 watcher (一次性)
+窗口 2: bash agentctl.sh logs both          # 跟双 agent 实时 (常驻)
+窗口 3: bash agentctl.sh dispatch backend   # 派任务 (按需)
+窗口 4: 写代码 / git / pytest               # 主工作区
+```
+
+PowerShell 等价(`Get-Content -Wait -Tail`):
+```powershell
+pwsh .aiagents/bin/agentctl.ps1 logs backend
+pwsh .aiagents/bin/agentctl.ps1 logs both         # 用 background job 并发跟两个文件
+```
+
 ## v3.2.0 — 一键启停 (up/down/restart)(2026-05-10)
 
 **痛点**: 冷启动每次要敲 200 字符 / 2 行的 nohup + disown 双行命令,反人类:

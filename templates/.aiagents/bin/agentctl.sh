@@ -6,6 +6,9 @@
 #   bash agentctl.sh down                                          # 一键停所有 watcher
 #   bash agentctl.sh restart                                       # down + up
 #   bash agentctl.sh status                                        # 查状态(刷 state/current.json + 日志尾部)
+#   bash agentctl.sh logs                                          # 列所有日志路径 + 末尾快照(不 follow)
+#   bash agentctl.sh logs <agent> [pretty|worker|raw]              # tail -F 单个日志(默认 pretty)
+#   bash agentctl.sh logs both                                     # tail -F backend + frontend pretty
 #   bash agentctl.sh dispatch [--provider X] [--timeout N] <kind>  # 派发任务(backend|frontend|bugfix-backend|bugfix-frontend)
 #   bash agentctl.sh wait backend [seconds]                        # 阻塞等待 done/failed/timeout
 #   bash agentctl.sh watch backend                                 # 启动单个 watcher (前台,通常由 up 子命令后台调)
@@ -623,6 +626,95 @@ watchers_up() {
   fi
 }
 
+# ---------- v3.2.1 日志监控 (logs) ----------
+# 痛点: up 后 watcher / agent-runner 全后台,Lane 看不到实时执行。
+# 设计:
+#   - 无参数: 打印所有日志路径 + 末尾 5 行快照(像 status 但只关注日志)
+#   - logs <agent>: tail -F 当前 pretty log (codex/claude 实时输出)
+#   - logs <agent> worker: tail -F watcher 自己的 stdout (检测 watcher 是否还活着)
+#   - logs <agent> raw: tail -F claude 原始 JSON Lines (v3.0.2+ 双 log debug)
+#   - logs both: tail -F backend + frontend pretty (合并视图,GNU tail 自带 banner)
+
+_log_path_for() {
+  local agent="$1" kind="${2:-pretty}"
+  local abbr="be"; [ "$agent" = "frontend" ] && abbr="fe"
+  local today
+  today="$(date +%Y%m%d)"
+  case "$kind" in
+    pretty) echo "$LOG_DIR/${abbr}_${today}.log" ;;
+    worker) echo "$LOG_DIR/worker-${agent}.log" ;;
+    raw)    echo "$LOG_DIR/${abbr}_${today}.log.raw" ;;
+    *)      echo "" ;;
+  esac
+}
+
+logs_snapshot() {
+  echo "==========================================="
+  echo "  日志路径 + 末尾快照 (logs <agent> 可 follow)"
+  echo "==========================================="
+  for agent in backend frontend; do
+    local abbr="be"; [ "$agent" = "frontend" ] && abbr="fe"
+    echo ""
+    echo "[$agent]"
+    for kind in pretty worker raw; do
+      local p
+      p="$(_log_path_for "$agent" "$kind")"
+      if [ -f "$p" ]; then
+        local size
+        size="$(wc -c < "$p" 2>/dev/null | tr -d ' ')"
+        printf "  %-7s %s (%s bytes)\n" "$kind:" "$p" "$size"
+      else
+        printf "  %-7s %s (不存在)\n" "$kind:" "$p"
+      fi
+    done
+    # snapshot pretty 末尾 5 行
+    local pp
+    pp="$(_log_path_for "$agent" pretty)"
+    if [ -f "$pp" ]; then
+      echo "  --- pretty 尾 5 行 ---"
+      tail -5 "$pp" 2>/dev/null | sed 's/^/    /'
+    fi
+  done
+  echo ""
+  echo "follow 用法:"
+  echo "  bash $BIN_DIR/agentctl.sh logs backend           # 跟 backend pretty"
+  echo "  bash $BIN_DIR/agentctl.sh logs frontend          # 跟 frontend pretty"
+  echo "  bash $BIN_DIR/agentctl.sh logs both              # 双 agent 同时跟"
+  echo "  bash $BIN_DIR/agentctl.sh logs backend worker    # 跟 watcher 自身输出"
+  echo "  bash $BIN_DIR/agentctl.sh logs backend raw       # 跟 claude 原始 JSON"
+}
+
+logs_follow() {
+  local agent="$1" kind="${2:-pretty}"
+  if [ "$agent" = "both" ] || [ "$agent" = "all" ]; then
+    local be fe
+    be="$(_log_path_for backend pretty)"
+    fe="$(_log_path_for frontend pretty)"
+    # 文件不存在时 tail -F 会等它出现,可直接传两个
+    [ -f "$be" ] || touch "$be"
+    [ -f "$fe" ] || touch "$fe"
+    echo "tail -F $be $fe (Ctrl+C 退出)"
+    tail -F "$be" "$fe"
+    return
+  fi
+  if [ "$agent" != "backend" ] && [ "$agent" != "frontend" ]; then
+    echo "用法: agentctl.sh logs {backend|frontend|both} [pretty|worker|raw]" >&2
+    exit 2
+  fi
+  local f
+  f="$(_log_path_for "$agent" "$kind")"
+  if [ -z "$f" ]; then
+    echo "kind 必须是 pretty|worker|raw,得到: $kind" >&2
+    exit 2
+  fi
+  if [ ! -f "$f" ]; then
+    echo "日志暂不存在,等待第一次写入 ($f)..."
+    touch "$f"
+  fi
+  echo "tail -F $f (Ctrl+C 退出)"
+  tail -F "$f"
+}
+
 watchers_down() {
   local stopped=0 absent=0
   for agent in backend frontend; do
@@ -654,6 +746,16 @@ case "$COMMAND" in
     watchers_down
     sleep 0.5
     watchers_up
+    ;;
+  logs)
+    # bash agentctl.sh logs                          → snapshot
+    # bash agentctl.sh logs <backend|frontend|both>  → follow
+    # bash agentctl.sh logs <agent> <pretty|worker|raw>
+    if [ $# -lt 2 ]; then
+      logs_snapshot
+    else
+      logs_follow "${2:-backend}" "${3:-pretty}"
+    fi
     ;;
   status) show_status ;;
   dispatch)
@@ -704,5 +806,5 @@ case "$COMMAND" in
   retry-other-provider)
     retry_other_provider "${2:-}"
     ;;
-  *) echo "用法: agentctl.sh {up|down|restart|status|dispatch|wait|watch|memory|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
+  *) echo "用法: agentctl.sh {up|down|restart|status|logs|dispatch|wait|watch|memory|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
 esac

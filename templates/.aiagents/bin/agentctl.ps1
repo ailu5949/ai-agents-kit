@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("up", "start", "down", "stop", "restart", "status", "dispatch", "wait", "watch", "memory", "release-without-verify")]
+  [ValidateSet("up", "start", "down", "stop", "restart", "status", "logs", "dispatch", "wait", "watch", "memory", "release-without-verify")]
   [string]$Command = "status",
 
   [Parameter(Position = 1)]
@@ -18,7 +18,10 @@ param(
   [int]$Timeout = 0,
 
   [Parameter()]
-  [string]$Reason = ""
+  [string]$Reason = "",
+
+  [Parameter(Position = 2)]
+  [string]$LogKind = "pretty"
 )
 
 $ErrorActionPreference = "Stop"
@@ -471,6 +474,84 @@ function Watchers-Down {
   Write-Host "总计: $stopped 个已停 / $absent 个已无"
 }
 
+# v3.2.1 日志监控 (logs) — Bash agentctl.sh 等价
+function Get-LogPath([string]$Agent, [string]$Kind = 'pretty') {
+  $abbr = if ($Agent -eq 'frontend') { 'fe' } else { 'be' }
+  $today = Get-Date -Format 'yyyyMMdd'
+  switch ($Kind) {
+    'pretty' { return Join-Path $LogDir "${abbr}_${today}.log" }
+    'worker' { return Join-Path $LogDir "worker-${Agent}.log" }
+    'raw'    { return Join-Path $LogDir "${abbr}_${today}.log.raw" }
+    default  { return $null }
+  }
+}
+
+function Logs-Snapshot {
+  Write-Host "==========================================="
+  Write-Host "  日志路径 + 末尾快照 (logs <agent> 可 follow)"
+  Write-Host "==========================================="
+  foreach ($agent in @('backend', 'frontend')) {
+    Write-Host ""
+    Write-Host "[$agent]"
+    foreach ($kind in @('pretty', 'worker', 'raw')) {
+      $p = Get-LogPath $agent $kind
+      if (Test-Path $p) {
+        $size = (Get-Item $p).Length
+        Write-Host ("  {0,-7} {1} ({2} bytes)" -f "${kind}:", $p, $size)
+      } else {
+        Write-Host ("  {0,-7} {1} (不存在)" -f "${kind}:", $p)
+      }
+    }
+    $pp = Get-LogPath $agent 'pretty'
+    if (Test-Path $pp) {
+      Write-Host "  --- pretty 尾 5 行 ---"
+      Get-Content -Path $pp -Tail 5 -Encoding UTF8 | ForEach-Object { Write-Host "    $_" }
+    }
+  }
+  Write-Host ""
+  Write-Host "follow 用法:"
+  Write-Host "  pwsh $PSCommandPath logs backend           # 跟 backend pretty"
+  Write-Host "  pwsh $PSCommandPath logs frontend          # 跟 frontend pretty"
+  Write-Host "  pwsh $PSCommandPath logs both              # 双 agent 同时跟"
+  Write-Host "  pwsh $PSCommandPath logs backend worker    # 跟 watcher 自身输出"
+  Write-Host "  pwsh $PSCommandPath logs backend raw       # 跟 claude 原始 JSON"
+}
+
+function Logs-Follow([string]$Agent, [string]$Kind = 'pretty') {
+  if ($Agent -eq 'both' -or $Agent -eq 'all') {
+    $be = Get-LogPath 'backend' 'pretty'
+    $fe = Get-LogPath 'frontend' 'pretty'
+    if (-not (Test-Path $be)) { New-Item -ItemType File -Path $be -Force | Out-Null }
+    if (-not (Test-Path $fe)) { New-Item -ItemType File -Path $fe -Force | Out-Null }
+    Write-Host "follow $be + $fe (Ctrl+C 退出)"
+    # PowerShell 单进程不能同时 -Wait 两个文件;并发后台 job 各 tail 一个
+    $j1 = Start-Job -ScriptBlock { param($p) Get-Content -Path $p -Wait -Tail 50 -Encoding UTF8 | ForEach-Object { "[BE] $_" } } -ArgumentList $be
+    $j2 = Start-Job -ScriptBlock { param($p) Get-Content -Path $p -Wait -Tail 50 -Encoding UTF8 | ForEach-Object { "[FE] $_" } } -ArgumentList $fe
+    try {
+      while ($true) { Receive-Job -Job $j1, $j2 | Write-Host; Start-Sleep -Milliseconds 200 }
+    } finally {
+      Stop-Job $j1, $j2 -ErrorAction SilentlyContinue
+      Remove-Job $j1, $j2 -ErrorAction SilentlyContinue
+    }
+    return
+  }
+  if ($Agent -notin @('backend', 'frontend')) {
+    Write-Host "用法: agentctl.ps1 logs {backend|frontend|both} [pretty|worker|raw]"
+    exit 2
+  }
+  $f = Get-LogPath $Agent $Kind
+  if (-not $f) {
+    Write-Host "kind 必须是 pretty|worker|raw,得到: $Kind"
+    exit 2
+  }
+  if (-not (Test-Path $f)) {
+    Write-Host "日志暂不存在,等待第一次写入 ($f)..."
+    New-Item -ItemType File -Path $f -Force | Out-Null
+  }
+  Write-Host "follow $f (Ctrl+C 退出)"
+  Get-Content -Path $f -Wait -Tail 50 -Encoding UTF8
+}
+
 # Change 7: Bottom dispatch table
 switch ($Command) {
   "up"       { Watchers-Up }
@@ -478,6 +559,10 @@ switch ($Command) {
   "down"     { Watchers-Down }
   "stop"     { Watchers-Down }
   "restart"  { Watchers-Down; Start-Sleep -Milliseconds 500; Watchers-Up }
+  "logs"     {
+    if ($PSBoundParameters.ContainsKey('Target')) { Logs-Follow $Target $LogKind }
+    else { Logs-Snapshot }
+  }
   "status"   { Show-Status }
   "dispatch" { Dispatch-Agent $Target $Provider $Timeout }
   "wait"     { Wait-Agent $Target $WaitSeconds }
