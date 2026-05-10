@@ -260,7 +260,7 @@ BACKEND_DIR=apps/api FRONTEND_DIR=apps/web bash /c/Users/mi/ai-agents-kit/instal
 cd D:\dev\ai\workspace\your-project
 git init
 pwsh C:\Users\mi\ai-agents-kit\install.ps1                                  # 交互式
-pwsh C:\Users\mi\ai-agents-kit\install.ps1 -BackendDir erp-be -Yes          # 非交互
+pwsh C:\Users\mi\ai-agents-kit\install.ps1 -BackendDir backend -Yes         # 非交互
 ```
 
 ### 从 v1 升级(已经按旧版装好的项目)

@@ -177,8 +177,8 @@ choose_preset() {
   esac
 }
 
-ask BACKEND_DIR       "后端目录(相对项目根)"    "erp-be"
-ask FRONTEND_DIR      "前端目录(相对项目根)"    "erp-fe"
+ask BACKEND_DIR       "后端目录(相对项目根)"    "backend"
+ask FRONTEND_DIR      "前端目录(相对项目根)"    "frontend"
 
 echo
 echo "🔎 识别技术栈..."

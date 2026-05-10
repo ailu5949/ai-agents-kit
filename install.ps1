@@ -4,7 +4,7 @@
 #   pwsh C:\Users\mi\ai-agents-kit\install.ps1
 #   pwsh C:\Users\mi\ai-agents-kit\install.ps1 -Yes
 #   pwsh C:\Users\mi\ai-agents-kit\install.ps1 -MigrateV1
-#   pwsh C:\Users\mi\ai-agents-kit\install.ps1 -BackendDir "erp-be" -FrontendDir "erp-fe" -Yes
+#   pwsh C:\Users\mi\ai-agents-kit\install.ps1 -BackendDir "backend" -FrontendDir "frontend" -Yes
 
 [CmdletBinding()]
 param(
@@ -147,8 +147,8 @@ $script:FrontendTestCmd = $FrontendTestCmd
 $script:BackendLintCmd  = $BackendLintCmd
 $script:FrontendLintCmd = $FrontendLintCmd
 
-$script:BackendDir  = Ask "后端目录(相对项目根)" $script:BackendDir  "erp-be"
-$script:FrontendDir = Ask "前端目录(相对项目根)" $script:FrontendDir "erp-fe"
+$script:BackendDir  = Ask "后端目录(相对项目根)" $script:BackendDir  "backend"
+$script:FrontendDir = Ask "前端目录(相对项目根)" $script:FrontendDir "frontend"
 
 Write-Host ""
 Write-Host "🔎 识别技术栈..."

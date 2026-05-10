@@ -22,8 +22,8 @@ if [ -z "$BACKEND_DIR" ] || [ -z "$FRONTEND_DIR" ]; then
     source "$PROJECT_ROOT/.claude/agents.conf"
   fi
 fi
-: "${BACKEND_DIR:=erp-be}"
-: "${FRONTEND_DIR:=erp-fe}"
+: "${BACKEND_DIR:=backend}"
+: "${FRONTEND_DIR:=frontend}"
 
 BE_ABS="$PROJECT_ROOT/$BACKEND_DIR"
 FE_ABS="$PROJECT_ROOT/$FRONTEND_DIR"
