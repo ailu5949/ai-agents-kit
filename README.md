@@ -8,6 +8,48 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.3.1 — Codex 默认 args 修复 Windows sandbox 卡死(2026-05-10)
+
+**痛点**: 全新装项目 codex 默认 args `--full-auto` 在 Windows 上会触 sandbox 卡死, 所有 PowerShell 命令(连 `pwd`/`Get-Location`)都失败:
+
+```
+# Codex Backend Blocked
+## 阻塞原因
+当前会话无法启动任何 PowerShell 命令, 最小命令 `pwd` 与 `Get-Location` 均失败
+```
+
+memory bugs.md 之前记过("agents.conf 改回 --full-auto → Windows sandbox 卡死"), 但默认值一直没修, README 只有警告没解决。
+
+**修复**: 4 处默认值全部改成 `--sandbox danger-full-access --skip-git-repo-check`:
+
+| 文件 | 改动 |
+|---|---|
+| `install.sh:278` | `CODEX_ARGS_DEFAULT` 默认值 |
+| `install.ps1:21` | `$CodexArgs` 顶部 param 默认 |
+| `templates/.aiagents/bin/agentctl.ps1:61` | KV fallback (config.json 不存在时兜底) |
+| `templates/.aiagents/bin/agent-runner.sh:105` | 终极兜底 (所有路径都没设 args 时) |
+
+**新 args 含义**:
+- `--sandbox danger-full-access`: sandbox 模式但允许全访问宿主(替代老 `--dangerously-bypass-approvals-and-sandbox`)
+- `--skip-git-repo-check`: 跳过 git 仓库检查 (`.aiagents/runtime` 等非 git 子目录不再报错)
+
+**已装项目影响**:
+
+| 项目 | 行为 |
+|---|---|
+| 全新空项目 | `bash install.sh --yes` 装出来就是正确值, 不会再卡死 |
+| 已有 v3 config.json 项目 | install 跳过 rewrite 不影响 — 但要主动修, 见下面"补丁修复" |
+
+**补丁修复已装项目** (yuqiSite / choseStock 等):
+
+```bash
+# 法 1: 编辑 .aiagents/config.json 把 providers.codex.args 改成新值
+# 法 2: 简单粗暴 — 删 config.json + agents.conf 重装
+cd /path/to/your/project
+rm -f .aiagents/config.json .claude/agents.conf
+bash /c/Users/mi/ai-agents-kit/install.sh --yes
+```
+
 ## v3.3.0 — 默认轻量栈 + `--stack` 预设(2026-05-10)
 
 **痛点**: 装新空项目时默认 Spring Boot 3.x + JPA(重型 Java),Lane 反馈"我不只是 ERP / 大型项目,中小项目应该用 python 等轻量"。
@@ -331,10 +373,10 @@ pwsh C:\Users\mi\ai-agents-kit\install.ps1 -MigrateV1
 
 ```bash
 cd /d/dev/ai/workspace/your-v2-project
-CODEX_ARGS="--dangerously-bypass-approvals-and-sandbox" bash /c/Users/mi/ai-agents-kit/install.sh --yes
+bash /c/Users/mi/ai-agents-kit/install.sh --yes
 ```
 
-**注意**: install.sh fresh path 默认 CODEX_ARGS 是 `--full-auto`(Windows sandbox 卡死高风险)。已有 v2 config.json 的项目走 migration path 没问题(保留旧值);全新装务必显式 `CODEX_ARGS=--dangerously-bypass-approvals-and-sandbox`。
+**v3.3.1 后默认值已修正**: install.sh `CODEX_ARGS` 默认 `--sandbox danger-full-access --skip-git-repo-check`(替代老 `--full-auto`,免 Windows sandbox 卡死)。v2 项目走 migration 时旧 `codex.args` 值**自动保留**,如果想用新值需手动改 `.aiagents/config.json` 或删 config 重装。
 
 升级后:
 - `agents.{backend,frontend}.provider` 默认 `codex`(行为零变化)

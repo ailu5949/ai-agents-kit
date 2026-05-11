@@ -18,7 +18,7 @@ param(
   [string]$FrontendLintCmd = "",
   [string]$ApiContractPath = "",
   [string]$CodexBin = "codex",
-  [string]$CodexArgs = "--full-auto",
+  [string]$CodexArgs = "--sandbox danger-full-access --skip-git-repo-check",
   [int]$CodexTimeout = 1800,
   [string]$Stack = "",
   [switch]$Yes,

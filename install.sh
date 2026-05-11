@@ -7,9 +7,13 @@
 #
 #   # 非交互模式(适合 CI / 脚本调用):
 #   BACKEND_DIR=apps/api FRONTEND_DIR=apps/web \
-#     BACKEND_STACK="Spring Boot 3" FRONTEND_STACK="Vite React" \
-#     BACKEND_TEST_CMD="./mvnw test" FRONTEND_TEST_CMD="npm test" \
+#     BACKEND_STACK="FastAPI + SQLAlchemy" FRONTEND_STACK="Vite + React" \
+#     BACKEND_TEST_CMD="pytest" FRONTEND_TEST_CMD="npm test" \
 #     bash /path/to/ai-agents-kit/install.sh --yes
+#
+#   # 或者直接用 stack 预设 (v3.3.0+):
+#   bash /path/to/ai-agents-kit/install.sh --yes --stack python-light       # 默认
+#   bash /path/to/ai-agents-kit/install.sh --yes --stack java-enterprise    # 重型 Java
 #
 #   # 从 v1 迁移(已经按旧版 docs/superpowers/ 装好的项目):
 #   bash /path/to/ai-agents-kit/install.sh --migrate-v1
@@ -275,7 +279,10 @@ ask BACKEND_LINT_CMD  "后端 lint 命令"          "ruff check ."
 ask FRONTEND_LINT_CMD "前端 lint 命令"          "npm run lint"
 ask API_CONTRACT_PATH "现有 API 契约路径(可空)" ""
 CODEX_BIN_DEFAULT="${CODEX_BIN:-codex}"
-CODEX_ARGS_DEFAULT="${CODEX_ARGS:---full-auto}"
+# Codex 默认 args: --full-auto 会触 Windows sandbox 卡死(PowerShell command 失败,memory bugs.md
+# 多次记录),用 --sandbox danger-full-access --skip-git-repo-check 让 codex 全访问宿主 +
+# 不要求工作目录是 git repo(.aiagents/runtime 之类非 git 子目录不会报错)。
+CODEX_ARGS_DEFAULT="${CODEX_ARGS:---sandbox danger-full-access --skip-git-repo-check}"
 CODEX_TIMEOUT_DEFAULT="${CODEX_TIMEOUT:-1800}"
 
 # ---------- 1. 创建目录骨架(v3 布局) ----------

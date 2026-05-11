@@ -58,7 +58,7 @@ function Read-Config {
     return [pscustomobject]@{
       backend  = [pscustomobject]@{ dir = $cfg["BACKEND_DIR"]; stack = $cfg["BACKEND_STACK"]; test_cmd = $cfg["BACKEND_TEST_CMD"]; lint_cmd = $cfg["BACKEND_LINT_CMD"] }
       frontend = [pscustomobject]@{ dir = $cfg["FRONTEND_DIR"]; stack = $cfg["FRONTEND_STACK"]; test_cmd = $cfg["FRONTEND_TEST_CMD"]; lint_cmd = $cfg["FRONTEND_LINT_CMD"] }
-      codex    = [pscustomobject]@{ bin = ($cfg["CODEX_BIN"] | ForEach-Object { if ($_) { $_ } else { "codex" } }); args = ($cfg["CODEX_ARGS"] | ForEach-Object { if ($_) { $_ } else { "--full-auto" } }); timeout_seconds = [int]($cfg["CODEX_TIMEOUT"]) }
+      codex    = [pscustomobject]@{ bin = ($cfg["CODEX_BIN"] | ForEach-Object { if ($_) { $_ } else { "codex" } }); args = ($cfg["CODEX_ARGS"] | ForEach-Object { if ($_) { $_ } else { "--sandbox danger-full-access --skip-git-repo-check" } }); timeout_seconds = [int]($cfg["CODEX_TIMEOUT"]) }
       workflow = [pscustomobject]@{ max_retry = [int]($cfg["MAX_RETRY"]) }
       paths    = [pscustomobject]@{ specs = "docs/ai-agents/specs"; reviews = "docs/ai-agents/reviews"; retrospectives = "docs/ai-agents/retrospectives"; signals = ".aiagents/signals"; logs = ".aiagents/logs"; state = ".aiagents/state"; memory = ".aiagents/memory" }
     }
