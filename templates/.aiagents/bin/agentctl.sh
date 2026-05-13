@@ -93,7 +93,37 @@ if os.path.exists(existing_path):
 
 PRESERVED_STATES = {"claude-verifying", "ready-for-human"}
 
+def _proc_alive(pid):
+    if pid <= 0:
+        return False
+    # POSIX 优先(Linux / macOS / MSYS bash 也支持 os.kill,但 Windows 原生 Python 报 WinError 87)
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        pass  # Windows: fallback subprocess kill -0(MSYS bash 必有 kill)
+    try:
+        import subprocess
+        return subprocess.run(
+            ["kill", "-0", str(pid)], capture_output=True, check=False, timeout=2
+        ).returncode == 0
+    except Exception:
+        return False
+
 def state(agent):
+    # v3.4 framework fix: running lock 优先(由 agent-runner.sh 写,Codex 真在跑时 state="running")
+    lock_path = os.path.join(runtime_dir, f"{agent}.running.lock")
+    if os.path.exists(lock_path):
+        try:
+            pid = int(open(lock_path, encoding="utf-8").read().strip())
+            if pid > 0 and _proc_alive(pid):
+                return "running"
+            # lock 进程已死 → 当 stale lock 处理(rm 让后续逻辑接管)
+            os.remove(lock_path)
+        except Exception:
+            pass
     for fn, value in [
         (f"task_ready_{agent}", "queued"),
         (f"bugfix_{agent}", "queued-bugfix"),

@@ -21,12 +21,30 @@ STATE_FILE="$ROOT/.aiagents/state/current.json"
 [ -d "$SIG_DIR" ] || exit 0
 
 events=""
+RUNTIME_DIR="$ROOT/.aiagents/runtime"
+
+# v3.4 framework fix: 若 Codex 真在跑(running lock 存在 + pid 活),跳过该 agent 的 done/failed/timeout 注入
+# 防止旧 signal(上一轮没消费)被 hook 当本轮完成
+_is_agent_running() {
+  local k="$1"
+  local lock="$RUNTIME_DIR/${k}.running.lock"
+  [ -f "$lock" ] || return 1
+  local pid
+  pid="$(cat "$lock" 2>/dev/null)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
 
 for kind in backend frontend; do
   done_file="$SIG_DIR/${kind}_done"
   failed_file="$SIG_DIR/${kind}_failed"
   timeout_file="$SIG_DIR/${kind}_timeout"
   ts="$(date +%Y%m%d_%H%M%S)"
+
+  # v3.4 framework fix: Codex 还在跑 → 跳过本 agent 的 hook 注入(旧 signal 不算本轮完成)
+  if _is_agent_running "$kind"; then
+    continue
+  fi
 
   if [ -f "$done_file" ]; then
     events+="- ✅ ${kind} 开发完成,请立即审查"$'\n'

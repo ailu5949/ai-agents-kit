@@ -102,7 +102,7 @@ if [ -z "$PROVIDER_BIN" ] || { [ "$PROVIDER" = "codex" ] && [ -z "$PROVIDER_ARGS
   [ -n "$legacy_bin" ] && [ -z "$PROVIDER_BIN" ] && PROVIDER_BIN="$legacy_bin"
   [ -n "$legacy_args" ] && [ -z "$PROVIDER_ARGS" ] && PROVIDER_ARGS="$legacy_args"
 fi
-[ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "codex" ] && PROVIDER_ARGS="--sandbox danger-full-access --skip-git-repo-check"
+[ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "codex" ] && PROVIDER_ARGS="--dangerously-bypass-approvals-and-sandbox"
 [ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "claude" ] && PROVIDER_ARGS="--dangerously-skip-permissions"
 
 # ---------- 桌面通知 (v3.1) — Lane 离线时唯一的回路 ----------
@@ -172,9 +172,37 @@ if os.path.exists(existing_path):
 
 PRESERVED_STATES = {"claude-verifying", "ready-for-human"}
 
+def _proc_alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        pass  # Windows native Python: WinError 87 — fallback subprocess
+    try:
+        import subprocess
+        return subprocess.run(
+            ["kill", "-0", str(pid)], capture_output=True, check=False, timeout=2
+        ).returncode == 0
+    except Exception:
+        return False
+
 def state(name):
     if name == agent:
         return running_state
+    # v3.4 framework fix: 对"非当前 agent",优先看 running lock(对家 agent 是否真在跑)
+    lock_path = os.path.join(runtime_dir, f"{name}.running.lock")
+    if os.path.exists(lock_path):
+        try:
+            pid = int(open(lock_path, encoding="utf-8").read().strip())
+            if pid > 0 and _proc_alive(pid):
+                return "running"
+            os.remove(lock_path)
+        except Exception:
+            pass
     for fn, value in [
         (f"task_ready_{name}", "queued"),
         (f"bugfix_{name}", "queued-bugfix"),
@@ -301,6 +329,16 @@ esac
 
 ABBR="be"; [ "$AGENT" = frontend ] && ABBR="fe"
 LOG="$LOG_DIR/${ABBR}_$(date +%Y%m%d).log"
+
+# v3.4 framework fix: 新一轮启动前清旧 done/failed/timeout signal(防 Stop hook 用旧 signal 兜底误报)
+rm -f "$SIG_DIR/${AGENT}_done" "$SIG_DIR/${AGENT}_failed" "$SIG_DIR/${AGENT}_timeout" 2>/dev/null
+
+# v3.4 framework fix: 写 running lock(给 stop-notify.sh 和 agentctl.sh state() 用,识别"真在跑")
+mkdir -p "$RUNTIME_DIR"
+echo "$$" > "$RUNTIME_DIR/${AGENT}.running.lock"
+# 退出时(成功/失败/timeout 均)删 lock — 在已有的 cleanup trap 之外补一个
+_lock_cleanup() { rm -f "$RUNTIME_DIR/${AGENT}.running.lock" 2>/dev/null || true; }
+trap _lock_cleanup EXIT INT TERM
 
 write_state "running"
 event "running" "${PROVIDER} 开始执行 spec=$(basename "$SPEC")"
