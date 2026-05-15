@@ -8,6 +8,56 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.4.2 — model 短名 alias(sonnet→4.6 等)(2026-05-10)
+
+**痛点**: v3.4.1 加了 `--model` 但 Lane 输入 `sonnet` 时, claude CLI 自己解析的 alias 可能指向老版本 (如 4.5),Lane 想要 4.6 必须写完整名 `claude-sonnet-4-6` 很难记。Codex 同理。
+
+**修复**: `agent-runner.sh` 加 `resolve_model_alias` 函数,**kit 层**做映射:
+
+| Lane 输入 | kit 自动展开 |
+|---|---|
+| `sonnet` | `claude-sonnet-4-6` |
+| `opus` | `claude-opus-4-6` |
+| `haiku` | `claude-haiku-4-5` |
+| `claude-sonnet-4-5` (完整名) | 原样传 (不会被覆盖) |
+| `gpt-5` / `gpt-5.5` / `gpt-5-codex` (codex) | passthrough (codex CLI 自己解析) |
+
+**自定义 alias**(覆盖内置默认): 编辑 `.aiagents/config.json`:
+```json
+{
+  "providers": {
+    "claude": {
+      "model_aliases": {
+        "sonnet": "claude-sonnet-4-7",
+        "fast":   "claude-haiku-4-5"
+      }
+    }
+  }
+}
+```
+之后 `--model sonnet` 自动展开成 `claude-sonnet-4-7`, `--model fast` 展开成 `claude-haiku-4-5`。
+
+**解析顺序**(优先级从高到低):
+1. Lane 在 `config.json` `providers.<p>.model_aliases.<alias>` 定义的自定义
+2. kit 内置默认(`sonnet`/`opus`/`haiku` → 4.6/4.6/4.5)
+3. passthrough — 完整模型名 / codex gpt-X / 不在 alias 表里的字符串
+
+**典型用法**:
+```bash
+# 用 sonnet (自动 4.6)
+/dispatch-backend --provider claude --model sonnet
+
+# 用 codex 的 gpt-5.5 (passthrough)
+/dispatch-backend --provider codex --model gpt-5.5
+
+# 配 per-agent 默认 (一劳永逸)
+# .aiagents/config.json:
+# {"agents": {
+#   "backend":  {"provider": "claude", "model": "sonnet"},   ← 自动 4.6
+#   "frontend": {"provider": "claude", "model": "sonnet"}
+# }}
+```
+
 ## v3.4.1 — 副 agent model 选择支持(2026-05-10)
 
 **痛点**: 主 Claude 想用 Opus 4.6,副编码 agent 想用 Sonnet(省 token + 编码任务足够),但 kit 没法配:

@@ -111,6 +111,35 @@ PROVIDER_MODEL="${MODEL_OVERRIDE:-}"
 [ -z "$PROVIDER_MODEL" ] && PROVIDER_MODEL="$(config_value "agents.${AGENT}.model" "")"
 [ -z "$PROVIDER_MODEL" ] && PROVIDER_MODEL="$(config_value "providers.${PROVIDER}.model" "")"
 
+# v3.4.2: model alias 解析 — 短名 (sonnet/opus/haiku) 映射成完整模型名
+# 解析顺序:
+#   1. config.json providers.<p>.model_aliases.<alias> (Lane 可覆盖, 优先)
+#   2. 内置 kit 默认 alias (claude 系列, 当前 4.6 版本)
+#   3. passthrough — 完整模型名 / codex gpt 系列 / 不在 alias 表里的字符串原样传
+resolve_model_alias() {
+  local provider="$1" model="$2"
+  [ -z "$model" ] && return 0
+  # 1. Lane 在 config.json 自定义的 alias 优先
+  local custom
+  custom="$(config_value "providers.${provider}.model_aliases.${model}" "")"
+  if [ -n "$custom" ]; then echo "$custom"; return; fi
+  # 2. 内置默认 alias (仅 claude — codex CLI 接受 gpt-5/gpt-5.5/gpt-5-codex 字符串, 不需要 alias)
+  if [ "$provider" = "claude" ]; then
+    case "$model" in
+      sonnet) echo "claude-sonnet-4-6"; return ;;
+      opus)   echo "claude-opus-4-6"; return ;;
+      haiku)  echo "claude-haiku-4-5"; return ;;
+    esac
+  fi
+  # 3. passthrough (完整名 / codex gpt 系列 / 未识别的短名)
+  echo "$model"
+}
+
+# 应用 alias 解析
+if [ -n "$PROVIDER_MODEL" ]; then
+  PROVIDER_MODEL="$(resolve_model_alias "$PROVIDER" "$PROVIDER_MODEL")"
+fi
+
 # ---------- 桌面通知 (v3.1) — Lane 离线时唯一的回路 ----------
 # 设计:
 #   - background spawn (8s sleep 不阻塞 runner)

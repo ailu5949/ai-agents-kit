@@ -21,6 +21,30 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 
 **model 优先级**: `--model` flag > `agents.<a>.model`(config.json) > `providers.<p>.model`(config.json) > 空(让 CLI 自己选默认)。
 
+**Claude 短名 alias**(v3.4.2+, 内置):
+
+| 短名 | 自动展开 |
+|---|---|
+| `sonnet` | `claude-sonnet-4-6` |
+| `opus` | `claude-opus-4-6` |
+| `haiku` | `claude-haiku-4-5` |
+| 完整名 (如 `claude-sonnet-4-5`) | 原样传 (不会被 alias 改写) |
+
+**Codex 模型**(passthrough, 不需要 alias): `gpt-5` / `gpt-5.5` / `gpt-5-codex` / `gpt-5-mini` 等,直接 `--model gpt-5.5` 传给 codex CLI。
+
+**自定义 alias**(覆盖内置默认): 编辑 `.aiagents/config.json`:
+```json
+{
+  "providers": {
+    "claude": {
+      "model_aliases": {
+        "sonnet": "claude-sonnet-4-7"
+      }
+    }
+  }
+}
+```
+
 **第一步 — 派发**:
 `bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch $ARGUMENTS backend`
 
