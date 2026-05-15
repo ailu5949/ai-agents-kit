@@ -599,7 +599,7 @@ rm -f "$TEMPLATE_SETTINGS_RENDERED"
 CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
 TEMPLATE_CLAUDE="$TEMPLATES/CLAUDE.md"
 echo "📝 同步 CLAUDE.md 三 Agent 章节..."
-rendered="$(sed \
+rendered_full="$(sed \
   -e "s|<BACKEND_STACK>|$BACKEND_STACK|g" \
   -e "s|<FRONTEND_STACK>|$FRONTEND_STACK|g" \
   -e "s|<BACKEND_TEST_CMD>|$BACKEND_TEST_CMD|g" \
@@ -608,6 +608,12 @@ rendered="$(sed \
   -e "s|<FRONTEND_LINT_CMD>|$FRONTEND_LINT_CMD|g" \
   -e "s|<API_CONTRACT_PATH>|${API_CONTRACT_PATH:-(无)}|g" \
   "$TEMPLATE_CLAUDE")"
+# Bug 修复 (重复标题): 旧版 rendered 含 marker 之前的标题块, replace_block 在 marker 处
+# 插入整个 rendered, 而原 CLAUDE.md 的标题(marker 外)保留 → 每跑一次 install 多一个标题块。
+# 修复: 拆成两部分 —— CLAUDE_HEADER (marker 前的标题) + rendered (marker 起的正文)。
+# replace_block 只用 rendered (无标题), 标题永远是原文件那一份, 不再重复。
+CLAUDE_HEADER="$(printf '%s\n' "$rendered_full" | sed '/ai-agents-kit:start v2/,$d')"
+rendered="$(printf '%s\n' "$rendered_full" | sed -n '/ai-agents-kit:start v2/,$p')"
 
 replace_block() {
   local file="$1" start="$2" end="$3" block="$4"
@@ -634,11 +640,12 @@ if [ -f "$CLAUDE_MD" ]; then
     echo "  已把 v1 章节升级为 v2"
   else
     printf '\n\n' >> "$CLAUDE_MD"
+    echo "$CLAUDE_HEADER" >> "$CLAUDE_MD"
     echo "$rendered" >> "$CLAUDE_MD"
     echo "  已追加 v2 章节到已有 CLAUDE.md"
   fi
 else
-  echo "$rendered" > "$CLAUDE_MD"
+  { echo "$CLAUDE_HEADER"; echo "$rendered"; } > "$CLAUDE_MD"
   echo "  已新建 CLAUDE.md"
 fi
 

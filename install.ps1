@@ -397,7 +397,7 @@ Write-Host "📝 同步 CLAUDE.md 三 Agent 章节..."
 $claudePath = Join-Path $ProjectRoot "CLAUDE.md"
 $tmplClaudeRaw = Get-Content -Raw -Encoding UTF8 (Join-Path $TemplateRoot "CLAUDE.md")
 $apiPath = if ($ApiContractPath) { $ApiContractPath } else { "(无)" }
-$rendered = $tmplClaudeRaw `
+$renderedFull = $tmplClaudeRaw `
   -replace [regex]::Escape("<BACKEND_STACK>"), $script:BackendStack `
   -replace [regex]::Escape("<FRONTEND_STACK>"), $script:FrontendStack `
   -replace [regex]::Escape("<BACKEND_TEST_CMD>"), $script:BackendTestCmd `
@@ -406,21 +406,30 @@ $rendered = $tmplClaudeRaw `
   -replace [regex]::Escape("<FRONTEND_LINT_CMD>"), $script:FrontendLintCmd `
   -replace [regex]::Escape("<API_CONTRACT_PATH>"), $apiPath
 
+# Bug 修复 (重复标题): rendered 含 marker 前的标题块, 升级时 Substring(0,startIdx) 保留旧标题
+# 再插入含标题的 rendered → 每跑一次多一个标题。修复: 拆成 claudeHeader + rendered (marker 起)。
+$mi = $renderedFull.IndexOf($MarkerStartV2)
+if ($mi -ge 0) {
+  $miLine = $renderedFull.LastIndexOf("`n", $mi) + 1
+  $claudeHeader = $renderedFull.Substring(0, $miLine)
+  $rendered = $renderedFull.Substring($miLine)
+} else {
+  $claudeHeader = ""
+  $rendered = $renderedFull
+}
+
 if (Test-Path $claudePath) {
   $old = Get-Content -Raw -Encoding UTF8 $claudePath
   if ($old.Contains($MarkerStartV2)) {
-    $pattern = [regex]::Escape($MarkerStartV2) + "(.|\n|\r)*?" + [regex]::Escape($MarkerEndV2)
-    $new = [regex]::Replace($old, $pattern, [System.Text.RegularExpressions.Regex]::Escape($rendered).Replace('\','\\'))
-    # 上面 Escape 会让 $ 等被转义,改用 -replace 的回调更安全
-    $new = $old -replace $pattern, ([regex]::Escape($rendered) -replace '\\','\\\\')
-    # 简化方案: 直接 Substring 拼接
+    # 从 marker 所在行的行首切, 保留旧文件的标题块那一份
     $startIdx = $old.IndexOf($MarkerStartV2)
+    $startLineIdx = $old.LastIndexOf("`n", $startIdx) + 1
     $endIdx = $old.IndexOf($MarkerEndV2)
     if ($endIdx -ge 0) {
       $endIdx = $endIdx + $MarkerEndV2.Length
-      $new = $old.Substring(0, $startIdx) + $rendered + $old.Substring($endIdx)
+      $new = $old.Substring(0, $startLineIdx) + $rendered + $old.Substring($endIdx)
     } else {
-      $new = $old + "`n`n" + $rendered
+      $new = $old.Substring(0, $startLineIdx) + $rendered
     }
     Write-Utf8File $claudePath $new
     Write-Host "  已就地升级 v2 章节"
@@ -428,21 +437,22 @@ if (Test-Path $claudePath) {
     $bak = "$claudePath.v1.bak.$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
     Copy-Item -Force $claudePath $bak
     $startIdx = $old.IndexOf($MarkerStartV1)
+    $startLineIdx = $old.LastIndexOf("`n", $startIdx) + 1
     $endIdx = $old.IndexOf($MarkerEndV1)
     if ($endIdx -ge 0) {
       $endIdx = $endIdx + $MarkerEndV1.Length
-      $new = $old.Substring(0, $startIdx) + $rendered + $old.Substring($endIdx)
+      $new = $old.Substring(0, $startLineIdx) + $rendered + $old.Substring($endIdx)
     } else {
-      $new = $old.Substring(0, $startIdx) + $rendered
+      $new = $old.Substring(0, $startLineIdx) + $rendered
     }
     Write-Utf8File $claudePath $new
     Write-Host "  备份 v1 → $(Split-Path $bak -Leaf),已升级为 v2"
   } else {
-    Add-Content -Encoding UTF8 -Path $claudePath -Value "`n`n$rendered"
+    Add-Content -Encoding UTF8 -Path $claudePath -Value "`n`n$claudeHeader$rendered"
     Write-Host "  已追加 v2 章节到已有 CLAUDE.md"
   }
 } else {
-  Write-Utf8File $claudePath $rendered
+  Write-Utf8File $claudePath ($claudeHeader + $rendered)
   Write-Host "  已新建 CLAUDE.md"
 }
 
