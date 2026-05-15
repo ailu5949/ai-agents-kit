@@ -21,29 +21,29 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 
 **model 优先级**: `--model` flag > `agents.<a>.model`(config.json) > `providers.<p>.model`(config.json) > 空(让 CLI 自己选默认)。
 
-**Claude 短名 alias**(v3.4.2+, 内置):
+**model 值直接传给 CLI**(kit 不改写,v3.4.3):
 
-| 短名 | 自动展开 |
+| 你写的值 | 行为 |
 |---|---|
-| `sonnet` | `claude-sonnet-4-6` |
-| `opus` | `claude-opus-4-6` |
-| `haiku` | `claude-haiku-4-5` |
-| 完整名 (如 `claude-sonnet-4-5`) | 原样传 (不会被 alias 改写) |
+| `sonnet` / `opus` / `haiku` | claude CLI 内建 alias,**自动解析到最新版本**(现在 sonnet=4.6 / opus=4.6)。将来出 4.7 自动跟进,无需改配置 |
+| `claude-sonnet-4-6`(完整名) | 锁定具体版本,CLI 原样接受 |
+| `gpt-5` / `gpt-5.5` / `gpt-5-codex`(codex) | 直接传 codex CLI |
 
-**Codex 模型**(passthrough, 不需要 alias): `gpt-5` / `gpt-5.5` / `gpt-5-codex` / `gpt-5-mini` 等,直接 `--model gpt-5.5` 传给 codex CLI。
+> ⚠️ kit **不再硬编码** `sonnet→claude-sonnet-4-6`(v3.4.2 的错误设计)。`sonnet` 交给 claude CLI 解析,永远指向最新 — 这正是"sonnet 默认 4.6"想要的效果。
 
-**自定义 alias**(覆盖内置默认): 编辑 `.aiagents/config.json`:
+**自定义 alias**(可选,仅当想锁定某个历史快照): 编辑 `.aiagents/config.json`:
 ```json
 {
   "providers": {
     "claude": {
       "model_aliases": {
-        "sonnet": "claude-sonnet-4-7"
+        "stable": "claude-sonnet-4-5-20250929"
       }
     }
   }
 }
 ```
+之后 `--model stable` 展开成那个固定快照(不随 CLI alias 漂移)。
 
 **第一步 — 派发**:
 `bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch $ARGUMENTS backend`

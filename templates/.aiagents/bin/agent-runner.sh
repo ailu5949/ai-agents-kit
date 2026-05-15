@@ -111,27 +111,26 @@ PROVIDER_MODEL="${MODEL_OVERRIDE:-}"
 [ -z "$PROVIDER_MODEL" ] && PROVIDER_MODEL="$(config_value "agents.${AGENT}.model" "")"
 [ -z "$PROVIDER_MODEL" ] && PROVIDER_MODEL="$(config_value "providers.${PROVIDER}.model" "")"
 
-# v3.4.2: model alias 解析 — 短名 (sonnet/opus/haiku) 映射成完整模型名
-# 解析顺序:
-#   1. config.json providers.<p>.model_aliases.<alias> (Lane 可覆盖, 优先)
-#   2. 内置 kit 默认 alias (claude 系列, 当前 4.6 版本)
-#   3. passthrough — 完整模型名 / codex gpt 系列 / 不在 alias 表里的字符串原样传
+# v3.4.3: model alias 解析 — 只查 config.json 自定义 alias, 否则 passthrough
+#
+# 重要 (v3.4.2 设计纠正): claude CLI 的 `sonnet` / `opus` 本身就是 alias,
+# CLI 会自动解析到**最新**模型 (claude --help 原文: "alias for the latest model")。
+# kit **不应**硬编码 sonnet→claude-sonnet-4-6 — 否则等 Sonnet 出 4.7 时,
+# `sonnet` alias 自动跟进 4.7, 而硬编码会把用户锁死在 4.6。
+#
+# 所以策略:
+#   - sonnet / opus / haiku → passthrough, 交给 claude CLI 解析最新版本
+#   - codex gpt-5 / gpt-5.5 / gpt-5-codex → passthrough, 交给 codex CLI
+#   - config.json providers.<p>.model_aliases.<x> → 仅当 Lane 想锁定特定 snapshot
+#     (如 "stable": "claude-sonnet-4-5-20250929") 时才用, 优先于 passthrough
 resolve_model_alias() {
   local provider="$1" model="$2"
   [ -z "$model" ] && return 0
-  # 1. Lane 在 config.json 自定义的 alias 优先
+  # Lane 在 config.json 自定义的 alias (锁定特定版本快照时用)
   local custom
   custom="$(config_value "providers.${provider}.model_aliases.${model}" "")"
   if [ -n "$custom" ]; then echo "$custom"; return; fi
-  # 2. 内置默认 alias (仅 claude — codex CLI 接受 gpt-5/gpt-5.5/gpt-5-codex 字符串, 不需要 alias)
-  if [ "$provider" = "claude" ]; then
-    case "$model" in
-      sonnet) echo "claude-sonnet-4-6"; return ;;
-      opus)   echo "claude-opus-4-6"; return ;;
-      haiku)  echo "claude-haiku-4-5"; return ;;
-    esac
-  fi
-  # 3. passthrough (完整名 / codex gpt 系列 / 未识别的短名)
+  # 否则 passthrough — sonnet/opus 是 CLI 内建 alias (指向最新), 不该 kit 层硬编码版本号
   echo "$model"
 }
 
