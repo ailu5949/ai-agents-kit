@@ -240,8 +240,33 @@ choose_preset() {
   esac
 }
 
-ask BACKEND_DIR       "后端目录(相对项目根)"    "backend"
-ask FRONTEND_DIR      "前端目录(相对项目根)"    "frontend"
+# v3.4.5: --yes 重装存量项目时, 默认目录优先读已有 config.json 的 agents.<a>.dir
+# (否则 --yes 用硬默认 backend/frontend, 与项目实际 stock-be/stock-fe 不符 → 子 CLAUDE.md 跳过)
+# 注意: config.json 路径必须作为独立 argv 参数传给 python — 嵌在 -c 代码字符串里
+# MSYS 不会把 /d/dev/... 转成 Windows 路径, Windows python open() 会失败。
+_existing_be_dir="backend"
+_existing_fe_dir="frontend"
+if [ -f "$PROJECT_ROOT/.aiagents/config.json" ] && [ -n "$_python_found" ]; then
+  _cfg_dirs="$("$_python_found" -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding='utf-8'))
+    ag = d.get('agents', {}) or {}
+    be = (ag.get('backend', {}) or {}).get('dir', '') or (d.get('backend', {}) or {}).get('dir', '')
+    fe = (ag.get('frontend', {}) or {}).get('dir', '') or (d.get('frontend', {}) or {}).get('dir', '')
+    print(be)
+    print(fe)
+except Exception:
+    print('')
+    print('')
+" "$PROJECT_ROOT/.aiagents/config.json" 2>/dev/null)"
+  _cfg_be="$(printf '%s\n' "$_cfg_dirs" | sed -n '1p')"
+  _cfg_fe="$(printf '%s\n' "$_cfg_dirs" | sed -n '2p')"
+  [ -n "$_cfg_be" ] && _existing_be_dir="$_cfg_be"
+  [ -n "$_cfg_fe" ] && _existing_fe_dir="$_cfg_fe"
+fi
+ask BACKEND_DIR       "后端目录(相对项目根)"    "$_existing_be_dir"
+ask FRONTEND_DIR      "前端目录(相对项目根)"    "$_existing_fe_dir"
 
 echo
 echo "🔎 识别技术栈..."
