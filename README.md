@@ -1,6 +1,6 @@
 # ai-agents-kit (v3)
 
-三 Agent 协作工作流的**可安装工具包**。Claude Code 当总指挥,前后端编码 agent 可灵活选 编码 agent (codex/claude) Code(Gemini 留扩展点)。v3 在 v2 基础上引入 multi-provider 抽象 + Pre-Human Decision Gate(主 Claude 真打验证关卡)+ Handover 机制(provider 切换接续)。
+三 Agent 协作工作流的**可安装工具包**。Claude Code 当总指挥,前后端编码 agent 可灵活选 Codex CLI / Claude Code(Gemini 留扩展点)。v3 在 v2 基础上引入 multi-provider 抽象 + Pre-Human Decision Gate(主 Claude 真打验证关卡)+ Handover 机制(provider 切换接续)+ 桌面通知 + `--model` 选择 + `/loop` 自动轮询。
 
 ## 它是什么
 
