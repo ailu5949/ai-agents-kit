@@ -23,7 +23,7 @@ STATE_FILE="$ROOT/.aiagents/state/current.json"
 events=""
 RUNTIME_DIR="$ROOT/.aiagents/runtime"
 
-# v3.4 framework fix: 若 Codex 真在跑(running lock 存在 + pid 活),跳过该 agent 的 done/failed/timeout 注入
+# v3.4 framework fix: 若 编码 agent 真在跑(running lock 存在 + pid 活),跳过该 agent 的 done/failed/timeout 注入
 # 防止旧 signal(上一轮没消费)被 hook 当本轮完成
 _is_agent_running() {
   local k="$1"
@@ -41,7 +41,7 @@ for kind in backend frontend; do
   timeout_file="$SIG_DIR/${kind}_timeout"
   ts="$(date +%Y%m%d_%H%M%S)"
 
-  # v3.4 framework fix: Codex 还在跑 → 跳过本 agent 的 hook 注入(旧 signal 不算本轮完成)
+  # v3.4 framework fix: 编码 agent 还在跑 → 跳过本 agent 的 hook 注入(旧 signal 不算本轮完成)
   if _is_agent_running "$kind"; then
     continue
   fi
@@ -151,7 +151,7 @@ if [ -f "$STATE_FILE" ]; then
   state_excerpt="$(head -c 2000 "$STATE_FILE" 2>/dev/null || true)"
 fi
 
-body="[Stop hook] 检测到 Codex 状态变化(wait 命令未消费时由此兜底):
+body="[Stop hook] 检测到 编码 agent 状态变化(wait 命令未消费时由此兜底):
 ${events}
 权威状态参考(.aiagents/state/current.json 摘录):
 ${state_excerpt}

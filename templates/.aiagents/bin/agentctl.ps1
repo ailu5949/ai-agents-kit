@@ -228,7 +228,7 @@ function Consume-Signal([string]$Path) {
 
 function Wait-Agent([string]$Agent, [int]$MaxSeconds) {
   $start = Get-Date
-  Write-Host "⏳ 等待 Codex-$Agent 完成信号(最长 ${MaxSeconds}s)..."
+  Write-Host "⏳ 等待编码 agent-$Agent 完成信号(最长 ${MaxSeconds}s)..."
   while ($true) {
     $elapsed = [int]((Get-Date) - $start).TotalSeconds
     foreach ($suffix in @("done", "failed", "timeout")) {
@@ -246,7 +246,7 @@ function Wait-Agent([string]$Agent, [int]$MaxSeconds) {
     if ($elapsed -ge $MaxSeconds) {
       Append-Event $Agent "wait-expired" "等待超时但未收到信号" @{ elapsed_seconds = $elapsed }
       Write-Host ""
-      Write-Host "⚠️ 等待 ${MaxSeconds}s 仍无信号 — Codex 可能仍在运行(Stop hook 兜底)"
+      Write-Host "⚠️ 等待 ${MaxSeconds}s 仍无信号 — 编码 agent 可能仍在运行(Stop hook 兜底)"
       exit 3
     }
     Start-Sleep -Seconds 3
@@ -293,7 +293,7 @@ function Invoke-CodexTask([string]$Agent, [string]$Mode) {
 function Watch-Agent([string]$Agent) {
   if ($Agent -notin @("backend", "frontend")) { throw "watch 只支持 backend/frontend" }
   Append-Event $Agent "watcher-ready" "watcher 已启动"
-  Write-Host "Codex-$Agent watcher ready · $(Get-Date -Format o)"
+  Write-Host "$Agent 编码 agent watcher ready · $(Get-Date -Format o)"
   Write-Host "    监听 $SignalDir\task_ready_$Agent 和 $SignalDir\bugfix_$Agent"
   while ($true) {
     $taskSignal = Join-Path $SignalDir "task_ready_$Agent"

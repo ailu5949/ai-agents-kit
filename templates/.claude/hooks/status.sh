@@ -9,7 +9,7 @@ LOG_DIR="$PROJECT_ROOT/docs/superpowers/logs"
 
 state_of() {
   local kind="$1"
-  if   [ -f "$SIG_DIR/task_ready_${kind}" ]; then echo "⏳ 队列中(已派发,Codex 尚未开工)"
+  if   [ -f "$SIG_DIR/task_ready_${kind}" ]; then echo "⏳ 队列中(已派发,编码 agent 尚未开工)"
   elif [ -f "$SIG_DIR/bugfix_${kind}" ];     then echo "⏳ 修复队列中"
   elif [ -f "$SIG_DIR/${kind}_done" ];       then echo "✅ 已完成,待 Claude 审查"
   elif [ -f "$SIG_DIR/${kind}_failed" ];     then echo "❌ 失败($(head -c 100 "$SIG_DIR/${kind}_failed" | tr '\n' ' '))"

@@ -22,7 +22,7 @@ foreach ($agent in @("backend", "frontend")) {
       switch ($suffix) {
         "done"    { $events.Add("- ✅ $agent 开发完成,请立即审查") }
         "failed"  { $events.Add("- ❌ $agent 开发失败: $reason") }
-        "timeout" { $events.Add("- ⏰ $agent Codex 超时(可能网络卡死): $reason") }
+        "timeout" { $events.Add("- ⏰ $agent 编码 agent 超时(可能网络卡死): $reason") }
       }
     }
   }
@@ -36,7 +36,7 @@ if (Test-Path $stateFile) {
 }
 
 $body = @"
-[Stop hook] 检测到 Codex 状态变化(wait 命令未消费时由此兜底):
+[Stop hook] 检测到 编码 agent 状态变化(wait 命令未消费时由此兜底):
 $($events -join "`n")
 
 权威状态参考(.aiagents/state/current.json 摘录):

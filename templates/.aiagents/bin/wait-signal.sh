@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# wait-signal.sh — 等待 Codex agent 完成信号,最长 9 分钟一轮。
+# wait-signal.sh — 等待 编码 agent 完成信号,最长 9 分钟一轮。
 # v2: 信号目录从 docs/superpowers/signals → .aiagents/signals。
 #
 # 用法: bash wait-signal.sh <backend|frontend> [等待秒数(默认 540)]
 # 退出码:
-#   0 = 检测到 *_done   (Codex 完成,可以审查)
-#   1 = 检测到 *_failed (Codex 失败,生成修复单)
-#   2 = 检测到 *_timeout(Codex 超时/卡死,通知用户检查网络)
-#   3 = 等待上限到了仍无信号(Codex 仍在跑,Stop hook 兜底)
+#   0 = 检测到 *_done   (编码 agent 完成,可以审查)
+#   1 = 检测到 *_failed (编码 agent 失败,生成修复单)
+#   2 = 检测到 *_timeout(编码 agent 超时/卡死,通知用户检查网络)
+#   3 = 等待上限到了仍无信号(编码 agent 仍在跑,Stop hook 兜底)
 #
 # 副作用: 消费掉信号文件(mv 到 .consumed_*),防止 Stop hook 二次触发。
 #
@@ -29,7 +29,7 @@ consume() {
   mv "$f" "${f%/*}/.consumed_$(basename "$f")_${ts}" 2>/dev/null || rm -f "$f" || true
 }
 
-echo "⏳ $(date '+%H:%M:%S') 开始等待 Codex-${KIND} 完成信号(最长 ${WAIT_MAX}s)..."
+echo "⏳ $(date '+%H:%M:%S') 开始等待编码 agent-${KIND} 完成信号(最长 ${WAIT_MAX}s)..."
 
 while true; do
   ELAPSED=$(( $(date +%s) - START ))
@@ -60,10 +60,10 @@ while true; do
 
   if [ $ELAPSED -ge "$WAIT_MAX" ]; then
     echo ""
-    echo "⚠️ $(date '+%H:%M:%S') 等待 ${WAIT_MAX}s 无信号 — Codex 可能仍在运行"
+    echo "⚠️ $(date '+%H:%M:%S') 等待 ${WAIT_MAX}s 无信号 — 编码 agent 可能仍在运行"
     exit 3
   fi
 
-  printf "\r  ⏳ 等待 Codex-%-8s %3ds / %ds  " "$KIND" "$ELAPSED" "$WAIT_MAX"
+  printf "\r  ⏳ 等待编码 agent-%-8s %3ds / %ds  " "$KIND" "$ELAPSED" "$WAIT_MAX"
   sleep "$POLL_INTERVAL"
 done

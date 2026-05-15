@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stop hook: Claude 每次 turn 结束时执行。
-# 检测到 Codex 完成/失败信号时,返回 JSON {"decision":"block","reason":"..."}
+# 检测到 编码 agent 完成/失败信号时,返回 JSON {"decision":"block","reason":"..."}
 # 让 Claude 在下一个 turn 自动进入审查流程。
 #
 # 关键: 无信号时必须静默退出 0,否则每次对话都会被无意义打断。
@@ -34,7 +34,7 @@ for kind in backend frontend; do
   if [ -f "$timeout_file" ]; then
     ts="$(date +%Y%m%d_%H%M%S)"
     reason="$(head -c 200 "$timeout_file" 2>/dev/null | tr '\n' ' ')"
-    events+="- ⏰ ${kind} Codex 超时(可能网络卡死): ${reason}"$'\n'
+    events+="- ⏰ ${kind} 编码 agent 超时(可能网络卡死): ${reason}"$'\n'
     events+="  → 建议告知用户检查面板 $( [ "$kind" = backend ] && echo 2 || echo 3 ) 输出,确认网络恢复后重新 /dispatch-${kind}"$'\n'
     mv "$timeout_file" "$SIG_DIR/.consumed_${kind}_timeout_${ts}" 2>/dev/null || rm -f "$timeout_file"
   fi
@@ -42,7 +42,7 @@ done
 
 [ -z "$events" ] && exit 0
 
-body="[Stop hook 兜底] 检测到 Codex 状态变化(wait-signal.sh 未消费时由此补充):
+body="[Stop hook 兜底] 检测到 编码 agent 状态变化(wait-signal.sh 未消费时由此补充):
 ${events}
 注意: 如果 wait-signal.sh 已经自动处理了对应信号,忽略本条即可。
 否则请按 CLAUDE.md 的 Karpathy 审查 rubric 处理:

@@ -1,12 +1,155 @@
 # ai-agents-kit (v3)
 
-三 Agent 协作工作流的**可安装工具包**。Claude Code 当总指挥,前后端编码 agent 可灵活选 Codex / Claude Code(Gemini 留扩展点)。v3 在 v2 基础上引入 multi-provider 抽象 + Pre-Human Decision Gate(主 Claude 真打验证关卡)+ Handover 机制(provider 切换接续)。
+三 Agent 协作工作流的**可安装工具包**。Claude Code 当总指挥,前后端编码 agent 可灵活选 编码 agent (codex/claude) Code(Gemini 留扩展点)。v3 在 v2 基础上引入 multi-provider 抽象 + Pre-Human Decision Gate(主 Claude 真打验证关卡)+ Handover 机制(provider 切换接续)。
 
 ## 它是什么
 
 这个目录(`C:\Users\mi\ai-agents-kit\`)是**工具包本身**,类似 `create-react-app` 之类的脚手架。它**不是**你的项目代码,放在哪都行,只要你的项目能访问它就可以。
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
+
+## v3.4.0 — 自动轮询 + 角色名通用化 + 迁移指南(2026-05-10)
+
+**3 个改动**:
+
+### 1. `dispatch-*` / `bugfix-*` slash command 加 `/loop` 自动轮询
+
+**痛点**: 派单后 `wait` 9 分钟没等到 → 主 Claude exit → 即使编码 agent 后来完成,Lane 不发消息主 Claude 永远不知道。
+
+**修复**: dispatch/bugfix slash command 退出码 = 3 (9 分钟内无信号) 分支改成:
+
+> 调用 Skill tool `skill=loop, args="5m /status"` 启动自动轮询。loop 每 5 分钟唤醒主 Claude 跑 `/status`,检测到 `state == done-awaiting-review` 后自动审查 + 推到 `ready-for-human` + 停 loop。Lane 可以离开,完成时桌面 toast 通知。
+
+降级 fallback: 若 `loop` skill 不可用,告知 Lane 手动敲 `/loop 5m /status`。
+
+### 2. "Codex" 角色名 → "编码 agent" 通用化
+
+**痛点**: multi-provider 后编码 agent 可以是 codex 也可以是 claude,但日志/文档/状态消息全写"Codex" — 用 claude 时词不达意。
+
+**修复**: 20 个文件批量替换角色名 "Codex" → "编码 agent" / "Backend 编码 agent" / "Frontend 编码 agent"。保留**合法用途**:
+- `Codex CLI` — 产品名
+- `providers.codex.args` / `CODEX_BIN` / `CODEX_ARGS` — 配置 key
+- `Codex reads prompt` / `Codex-specific override` — codex 特定行为说明
+
+新文案样例:
+```
+旧: "Codex-Backend 完成 → 立即审查"
+新: "Backend 编码 agent 完成 → 立即审查"
+
+旧: "[Stop hook] 检测到 Codex 状态变化"
+新: "[Stop hook] 检测到编码 agent 状态变化"
+
+旧: "Codex-$AGENT watcher ready"
+新: "$AGENT 编码 agent watcher ready"
+```
+
+### 3. 跨机器迁移指南(写到 README)
+
+见下方"迁移到另一台电脑"段落。
+
+---
+
+## 迁移到另一台电脑
+
+ai-agents-kit 是**工具包**(`C:/Users/mi/ai-agents-kit/`),你的项目是**目标项目**(如 `D:/dev/ai/workspace/choseStock`)。两个都要迁。
+
+### 1. 工具包(ai-agents-kit)迁移
+
+**推荐: GitLab / GitHub 远程仓库**(已是 git repo, 直接 push):
+
+```bash
+# 旧电脑 — 推到 GitLab 私有仓库
+cd C:/Users/mi/ai-agents-kit
+git remote add origin git@gitlab.com:your-username/ai-agents-kit.git
+git push -u origin master
+git push --tags     # tag 一起推 (v3.0.0 ~ v3.4.0 + companion-phase-0)
+
+# 新电脑 — clone
+cd C:/Users/your-name/    # 或 ~/dev/tools/
+git clone git@gitlab.com:your-username/ai-agents-kit.git
+```
+
+**备选: 直接拷文件**(无 git 仓库,如离线场景):
+
+```bash
+# 旧电脑 — 打包 (排除 .git 也可,如果不在乎历史)
+cd C:/Users/mi/
+tar czf ai-agents-kit.tar.gz --exclude='.git' ai-agents-kit/
+# 通过 U 盘 / 网盘 / scp 拷过去
+
+# 新电脑 — 解包到任意目录
+cd ~/dev/tools/
+tar xzf /path/to/ai-agents-kit.tar.gz
+```
+
+### 2. 新电脑依赖检查
+
+ai-agents-kit 需要这些工具,新电脑装一下:
+
+| 工具 | 必须 | 用途 | 验证 |
+|---|---|---|---|
+| `bash` (4.x+) | ✅ | 主脚本 | `bash --version` |
+| `python` (3.7+) | ✅ | JSON 状态处理 | `python -c "import json; print('ok')"` |
+| `jq` | 推荐 | install.sh 优先用,缺少 fallback python | `jq --version` |
+| `git` | ✅ | watcher / agent-runner 调 | `git --version` |
+| `codex` CLI | 看 provider | 后端选 codex 时需要 | `codex --version` |
+| `claude` CLI | 看 provider | 后端选 claude 时需要 | `claude --version` |
+| `pwsh` (PowerShell 7+) | 可选 | 桌面通知 + Windows 后台 watcher | `pwsh --version` |
+| `BurntToast` (PS module) | 可选 | 更漂亮的 Toast (没装走 NotifyIcon 兜底) | `Get-Module -ListAvailable BurntToast` |
+
+Windows 新电脑标准安装顺序:
+```bash
+# 1. Git for Windows (自带 bash + git): https://git-scm.com/download/win
+# 2. Python: https://www.python.org/downloads/ (装时勾 "Add to PATH")
+# 3. jq: scoop install jq  或  https://jqlang.github.io/jq/download/
+# 4. PowerShell 7: winget install Microsoft.PowerShell
+# 5. codex / claude CLI 按各自文档
+# 6. (可选) BurntToast:
+#    pwsh -Command "Install-Module BurntToast -Scope CurrentUser -Force"
+```
+
+### 3. 目标项目迁移
+
+每个用 ai-agents-kit 的项目是**独立 git repo**(如 choseStock),迁移就跟普通项目一样:
+
+```bash
+# 旧电脑 (项目已有 git origin)
+cd D:/dev/ai/workspace/choseStock
+git push origin master
+git push --tags
+
+# 新电脑
+cd ~/dev/ai/workspace/    # 或任意位置
+git clone git@gitlab.com:your-username/choseStock.git
+cd choseStock
+
+# 重要 — 跑一次 install.sh 让 .aiagents/bin/ 等基础设施"重新指向"新电脑路径:
+bash /path/to/new/ai-agents-kit/install.sh --yes
+```
+
+install.sh 是**幂等**的:
+- 已有 `.aiagents/config.json` (v3 schema) → 跳过 rewrite, 保留你的 backend/frontend dir / stack / 命令配置 ✅
+- 已有 `memory/*.md` → 不覆盖 ✅
+- 已有 `docs/ai-agents/specs/*` → 不覆盖 ✅
+- 仅刷新 `.aiagents/bin/*` 脚本(基础设施)和 slash commands
+
+### 4. 验证
+
+```bash
+cd /new/path/to/your-project
+bash .aiagents/bin/agentctl.sh status         # 看到 backend/frontend + provider 三栏 → OK
+bash .aiagents/bin/agentctl.sh logs           # 看到日志路径 snapshot → OK
+```
+
+### 5. 注意事项
+
+| 项 | 说明 |
+|---|---|
+| **bash 绝对路径** | 新电脑安装 ai-agents-kit 的路径不同,记得改本地 .bashrc / 各种快捷方式里的 `/c/Users/mi/ai-agents-kit/` 路径 |
+| **node_modules / target/** | 项目里的 node_modules / Maven target / `.venv` 不要从旧电脑 git 推过来 (一般 `.gitignore` 已排除),新电脑跑 `npm install` / `mvn install` / `poetry install` 重建即可 |
+| **API key** | codex / claude CLI 的 token / API key 是用户级配置,需要新电脑重新 login (`codex auth login` / `claude login`) |
+| **API contract / 业务数据** | 跟项目走,git 推就好 |
+| **memory 跨项目复用** | `.aiagents/memory/global/{patterns,bugs}.md` 是项目内的,但你想在多个项目共享(如 patterns.md)? 手动拷过去/写一个同步脚本,kit 暂无内建支持 |
 
 ## v3.3.1 — Codex 默认 args 修复 Windows sandbox 卡死(2026-05-10)
 
@@ -408,9 +551,9 @@ bash ./start-agents.sh
 - **触发**: Claude 通过 slash command(`/dispatch-backend` 等)调用 `agentctl.sh dispatch backend` 写信号 + 事件,**不**靠自然语言触发词
 - **执行链**: `signal → watch-agent.sh → agent-runner.sh → codex → state + event`(每层职责单一,可观测)
 - **状态权威**: 不是信号文件,而是 `.aiagents/state/current.json` 的 `<agent>.state` 字段
-- **反馈**: Codex 完成后 runner 写 `*_done` 信号 + done 事件 + 更新 state。Claude 下次 turn 结束时 **Stop hook** 检测到信号 + 摘录 state 注入"请审查"提示
+- **反馈**: 编码 agent 完成后 runner 写 `*_done` 信号 + done 事件 + 更新 state。Claude 下次 turn 结束时 **Stop hook** 检测到信号 + 摘录 state 注入"请审查"提示
 - **审查**: Claude 按 **Karpathy 6 原则**(A 执行验证 / B Think / C Simplicity / D Surgical / E Goal-Driven / F Sanity)逐项核查
-- **修复**: 审查失败 → 生成 `04-Bug修复-*.md` → `/bugfix-*` 再派 Codex → 最多 3 轮
+- **修复**: 审查失败 → 生成 `04-Bug修复-*.md` → `/bugfix-*` 再派编码 agent → 最多 3 轮
 - **记忆**: 每轮任务前 Claude 读 `memory/global/{patterns,bugs}.md`、`projects/context.md`、`ideas/product-ideas.md`;`/retrospective` 把本轮经验回写
 
 ## 升级工具包(在已安装项目)

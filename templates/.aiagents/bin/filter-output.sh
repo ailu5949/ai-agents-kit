@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 过滤 Codex 输出: 保留进度摘要,去掉 diff 具体内容。
+# 过滤编码 agent 输出: 保留进度摘要,去掉 diff 具体内容。
 # 完整输出仍然写入 log,这个脚本只用于终端显示。
 #
 # 保留: codex 思考行、exec 命令(截断)、文件写入摘要、succeeded/declined/rejected、

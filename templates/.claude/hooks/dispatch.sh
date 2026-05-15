@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 被 slash command 调用,写信号文件触发 Codex watcher。
+# 被 slash command 调用,写信号文件触发 编码 agent watcher。
 #
 # 用法:
 #   dispatch.sh backend          # 派后端新任务(读 02-后端编码.md)

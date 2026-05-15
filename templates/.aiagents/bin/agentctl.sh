@@ -113,7 +113,7 @@ def _proc_alive(pid):
         return False
 
 def state(agent):
-    # v3.4 framework fix: running lock 优先(由 agent-runner.sh 写,Codex 真在跑时 state="running")
+    # v3.4 framework fix: running lock 优先(由 agent-runner.sh 写,编码 agent 真在跑时 state="running")
     lock_path = os.path.join(runtime_dir, f"{agent}.running.lock")
     if os.path.exists(lock_path):
         try:
@@ -325,7 +325,7 @@ consume_signal() {
 wait_agent() {
   local agent="$1" max="$2" start elapsed suffix file reason
   start="$(date +%s)"
-  echo "waiting Codex-$agent (max ${max}s)..."
+  echo "waiting $agent (max ${max}s)..."
   while true; do
     elapsed=$(( $(date +%s) - start ))
     for suffix in done failed timeout; do
@@ -345,7 +345,7 @@ wait_agent() {
     if [ "$elapsed" -ge "$max" ]; then
       event "$agent" "wait-expired" "等待 ${max}s 超时但未收到信号"
       echo ""
-      echo "wait ${max}s no signal — Codex may still be running (Stop hook fallback)"
+      echo "wait ${max}s no signal — coding agent may still be running (Stop hook fallback)"
       exit 3
     fi
     printf "\r  %3ds / %ds  " "$elapsed" "$max"

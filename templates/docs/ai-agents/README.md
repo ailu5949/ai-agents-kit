@@ -8,16 +8,16 @@
 |------|--------|---------|
 | **你** | 提需求 / 审核产物 / 点击 go | 只跟 Claude 说话 |
 | **Claude Code** | 拆需求 / 写编码指引 / 派活 / 审查 / 写修复单 / 复盘 / 写记忆 | 你 + signal/state |
-| **Codex-Backend** | 根据 02 指引在后端目录写代码 | signal |
-| **Codex-Frontend** | 根据 03 指引在前端目录写代码 | signal |
+| **Backend 编码 agent** | 根据 02 指引在后端目录写代码 | signal |
+| **Frontend 编码 agent** | 根据 03 指引在前端目录写代码 | signal |
 
 ## 产物编号
 
 | 文件 | 产出者 | 说明 |
 |------|--------|------|
 | `specs/01-需求.md` | Claude | 需求拆解 + 验收标准 |
-| `specs/02-后端编码.md` | Claude | 给后端 Codex 的指令单 |
-| `specs/03-前端编码.md` | Claude | 给前端 Codex 的指令单 |
+| `specs/02-后端编码.md` | Claude | 给后端编码 agent 的指令单 |
+| `specs/03-前端编码.md` | Claude | 给前端编码 agent 的指令单 |
 | `specs/04-Bug修复-backend.md` | Claude | 审查失败时生成 |
 | `specs/04-Bug修复-frontend.md` | Claude | 审查失败时生成 |
 | `reviews/backend-review.md` | Claude | 每轮后端审查追加一段 |
@@ -44,7 +44,7 @@ cd <项目根>
 bash ./start-agents.sh
 ```
 
-屏幕变成三窗格:上 Claude,左下 Codex-BE,右下 Codex-FE。
+屏幕变成三窗格:上 Claude,左下 Backend 编码 agent,右下 Frontend 编码 agent。
 
 ### 方案 ② Cursor / VSCode 三终端面板(推荐 Windows)
 
@@ -70,7 +70,7 @@ PowerShell 等价:
 5. Claude 产 `specs/02-后端编码.md` → 你审阅,确认
 6. Claude 产 `specs/03-前端编码.md` → 你审阅,确认
 7. 你说"派后端"(或 `/dispatch-backend`)→ watcher 调度 runner → 产生日志 + 状态/事件
-8. Codex-BE 完成 → state.backend.state 变成 `done-awaiting-review` → 你下次给 Claude 发消息时,Stop hook 自动注入"后端完成,请审查"
+8. Backend 编码 agent 完成 → state.backend.state 变成 `done-awaiting-review` → 你下次给 Claude 发消息时,Stop hook 自动注入"后端完成,请审查"
 9. Claude 走 Karpathy 6 项审查 → 追加 `reviews/backend-review.md` → 通过或生成 `04-Bug修复-backend.md`
 10. 通过则你说"派前端",进入前端循环;不通过 Claude 自动 `/bugfix-backend`(最多 3 轮)
 11. 前端走完 + 联调通过后 → `/retrospective` 复盘 + 把经验写回 `.aiagents/memory/`
@@ -97,7 +97,7 @@ Claude 每次新会话/新需求开始前会读这四份。失败和成功经验
 
 ## 监理机制(Karpathy 6 项)
 
-Claude 审查 Codex 产出时**必须**走完 6 项(详见项目根 `CLAUDE.md`):
+Claude 审查编码 agent 产出时**必须**走完 6 项(详见项目根 `CLAUDE.md`):
 
 1. **A 执行验证** — 读日志 + state/events + git diff
 2. **B Think** — 对照 02/03 + 对照 bugs.md
@@ -115,7 +115,7 @@ Claude 审查 Codex 产出时**必须**走完 6 项(详见项目根 `CLAUDE.md`)
 | `/dispatch-backend` 报"规格文件不存在" | 先让 Claude 产出 `specs/02-后端编码.md` |
 | Stop hook 不触发 | 看 `.claude/settings.json` 里 hooks.Stop 是否指向 `.aiagents/bin/stop-notify.sh` |
 | state.json 不更新 | 看 watcher 终端是否还活着;`bash .aiagents/bin/agentctl.sh status` 强刷一次 |
-| Codex 完成了但 Claude 没收到提醒 | Stop hook 在**下一次**你发消息时生效;先敲 `/status` 确认 |
+| 编码 agent 完成了但 Claude 没收到提醒 | Stop hook 在**下一次**你发消息时生效;先敲 `/status` 确认 |
 | 连续失败 3 次后停了 | `cat .aiagents/state/current.json` 看 state 字段;查 `.aiagents/logs/` 找原因 |
 | 信号乱了想从头再来 | `rm .aiagents/signals/* -f`(`.consumed_*` 一并清) |
 | Cursor 终端中文乱码 | `chcp 65001`(PowerShell)/ `export LANG=zh_CN.UTF-8`(bash) |

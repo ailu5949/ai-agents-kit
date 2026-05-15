@@ -17,7 +17,7 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 
 ---
 
-**第二步 — 自动等待 Codex 修复完成**:
+**第二步 — 自动等待编码 agent 修复完成**:
 `bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" wait frontend`
 
 ---
@@ -28,5 +28,5 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 |--------|------|----------|
 | 0 | 修复完成 | 立即按 Karpathy rubric 再次审查 |
 | 1 | 修复失败 | 读失败原因,判断是否可再次修复,达 MAX_RETRY 则告知用户人工介入 |
-| 2 | Codex 卡死 | 告知用户检查网络,不计入重试次数 |
-| 3 | 无信号 | Stop hook 兜底 |
+| 2 | 编码 agent 卡死 | 告知用户检查网络,不计入重试次数 |
+| 3 | 9 分钟内无信号 | **启动 `/loop` 自动轮询**: 调 Skill tool `skill=loop, args="5m /status"`, 告知 Lane "已启动 5min 自动轮询"。loop tick 检测到 `done-awaiting-review` 自动审查 + 停 loop。fallback: Lane 手动敲 `/loop 5m /status`。 |

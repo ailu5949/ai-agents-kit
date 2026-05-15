@@ -81,7 +81,7 @@ pnpm tauri dev
 ## 不打算做的事
 
 - ❌ 替代 Claude Code(Claude Code 仍是主操作面)
-- ❌ 与 Codex / Claude provider 直接对话(走 agentctl.sh)
+- ❌ 与 编码 agent (codex/claude) provider 直接对话(走 agentctl.sh)
 - ❌ 持久化业务数据(项目自治,events.jsonl 已经够)
 - ❌ 远程通知 / webhook(本机 desktop app 即可)
 - ❌ 强制安装(install.sh 不会带,Lane 自己 opt-in)

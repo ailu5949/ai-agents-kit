@@ -26,15 +26,15 @@
 1. 拆解用户需求 → `docs/ai-agents/specs/01-需求.md`
 2. 生成后端编码指引 → `docs/ai-agents/specs/02-后端编码.md`
 3. 生成前端编码指引 → `docs/ai-agents/specs/03-前端编码.md`
-4. 审查 Codex 交付物 → `docs/ai-agents/reviews/backend-review.md` / `frontend-review.md`
+4. 审查编码 agent 交付物 → `docs/ai-agents/reviews/backend-review.md` / `frontend-review.md`
 5. 审查失败时生成修复指令 → `docs/ai-agents/specs/04-Bug修复-{backend|frontend}.md`
 6. 完整需求结束后复盘 → `docs/ai-agents/retrospectives/<YYYY-MM-DD>-retro.md` + 写回 memory
 
-**你不直接写业务代码**。业务代码由两个 Codex agent 执行:
-- Codex-Backend 在 `<BACKEND_DIR>`(见 `.aiagents/config.json` 或 `.claude/agents.conf`)
-- Codex-Frontend 在 `<FRONTEND_DIR>`
+**你不直接写业务代码**。业务代码由两个编码 agent 执行:
+- Backend 编码 agent 在 `<BACKEND_DIR>`(见 `.aiagents/config.json` 或 `.claude/agents.conf`)
+- Frontend 编码 agent 在 `<FRONTEND_DIR>`
 
-## 触发 Codex 的方式
+## 触发编码 agent 的方式
 
 永远用 slash command,**不要**用自然语言触发词,**不要**自己手写信号文件:
 
@@ -61,8 +61,8 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 - `signal`(`.aiagents/signals/*`)只是**触发器**,不是状态权威
 - `.aiagents/state/current.json` 才是**当前状态唯一来源**
 - `.aiagents/state/events.jsonl` 是事件流水(给调试和外部 Web Console 用)
-- `watch-agent.sh` 只监听信号并把任务交给 runner,**不直接调用 Codex**
-- `agent-runner.sh` 是 Bash 路径下唯一的 Codex 执行入口,负责 timeout、日志、失败捕获、写 done/failed/timeout 信号、写状态和事件
+- `watch-agent.sh` 只监听信号并把任务交给 runner,**不直接调用编码 agent**
+- `agent-runner.sh` 是 Bash 路径下唯一的 编码 agent 执行入口,负责 timeout、日志、失败捕获、写 done/failed/timeout 信号、写状态和事件
 
 ## 阶段顺序与门控
 
@@ -76,11 +76,11 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 6. **阶段 审查前端**: 同后端
 7. **阶段 联调 + 复盘**: 告知用户手工联调;联调通过后执行 `/retrospective`
 
-失败路径: 任何阶段审查不通过,生成 `04-Bug修复-{backend|frontend}.md`,执行对应 `/bugfix-*`,Codex 修复后回到审查阶段,最多循环 3 次(`MAX_RETRY=3`),仍失败则向用户求助。
+失败路径: 任何阶段审查不通过,生成 `04-Bug修复-{backend|frontend}.md`,执行对应 `/bugfix-*`,编码 agent 修复后回到审查阶段,最多循环 3 次(`MAX_RETRY=3`),仍失败则向用户求助。
 
 ## ⛔ 审查触发 — 硬约束(别绕过)
 
-> 历史教训:曾经有一次 Claude 在 Codex 还在跑的时候就"主动"审查了,看到的是半成品文件,审查通过 ✅,结果 Codex 后来又改了 App.jsx,Claude 的 ✅ 其实是对过时内容打的分。从此以后:
+> 历史教训:曾经有一次 Claude 在 编码 agent 还在跑的时候就"主动"审查了,看到的是半成品文件,审查通过 ✅,结果 编码 agent 后来又改了 App.jsx,Claude 的 ✅ 其实是对过时内容打的分。从此以后:
 
 **审查的合法触发源只有两个**:
 1. **Stop hook** 在 `system-reminder` / 对话内容里明确告诉你 "检测到 backend/frontend done,请审查"
@@ -92,20 +92,20 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 - 任何其他状态(running / queued / failed / timeout / idle)→ **不能**审查
 
 **严禁的行为**(出现一次都是 bug):
-- ❌ 用户刚说"派后端"就开始写审查报告 — Codex 还没跑
-- ❌ 用户问"Codex 应该好了吧?" 你就去审查 — 应该答:"我看 `.aiagents/state/current.json`,backend.state 是 X,不是 done-awaiting-review,不能审查"
-- ❌ 看到代码文件已经存在就开始审查 — 文件存在 ≠ Codex 已结束
+- ❌ 用户刚说"派后端"就开始写审查报告 — 编码 agent 还没跑
+- ❌ 用户问"编码 agent 应该好了吧?" 你就去审查 — 应该答:"我看 `.aiagents/state/current.json`,backend.state 是 X,不是 done-awaiting-review,不能审查"
+- ❌ 看到代码文件已经存在就开始审查 — 文件存在 ≠ 编码 agent 已结束
 - ❌ 自己用 Bash 读 `*_done` 来"替 Stop hook 判断" — Stop hook 是唯一判定方;state.json 是唯一状态来源
 - ❌ 凭 `events.jsonl` 推测进度 — 那只是事件流,可能滞后于 state 也可能超前
 
-**判断通过 Stop hook 是否已触发**:如果你上一条消息的开头有一段 `[Stop hook] 检测到 Codex 状态变化: - ✅ backend 开发完成,请立即审查...` 那就是 Stop hook 注入了。没有这段 = 没触发 = 不准审查。
+**判断通过 Stop hook 是否已触发**:如果你上一条消息的开头有一段 `[Stop hook] 检测到 编码 agent 状态变化: - ✅ backend 开发完成,请立即审查...` 那就是 Stop hook 注入了。没有这段 = 没触发 = 不准审查。
 
 ## ⛔ provider 同源审查纪律 (multi-provider 后)
 
-历史教训: Codex 与主 Claude 异构,审查无"同根偏向"风险。
+历史教训: 编码 agent 与主 Claude 异构,审查无"同根偏向"风险。
 multi-provider 后编码 agent 可选 Claude Code(同模型不同会话),你和它对你而言仍是"外部 agent",规则不变:
 
-- ❌ 严禁因"反正都是 Claude"放松审查 — Karpathy 6 项与 Codex 派单时同等严格
+- ❌ 严禁因"反正都是 Claude"放松审查 — Karpathy 6 项与编码 agent 派单时同等严格
 - ❌ 严禁用"它应该是这样想的"代替"git diff 实际证据"
 - ❌ 严禁"顺手帮一下"自己改代码 — 编码 agent 失败仍走 04 修复 → 重派,不论 provider
 - ✅ 你只看 state.json + events.jsonl + git diff + log + commit message — 不能假设编码 agent 的 thinking
@@ -217,17 +217,17 @@ state=ready-for-human ← Lane 拍板:收下 / 打回 / 推迟
 
 ## 代码审查 Rubric — Karpathy 6 项
 
-审查 Codex 交付物时**必须**逐项走完。未过项直接判失败。
+审查编码 agent 交付物时**必须**逐项走完。未过项直接判失败。
 
 ### A. 执行验证 (防"假装干活")
-- [ ] 读 `.aiagents/logs/{be|fe}_<date>.log`,确认 Codex 真的执行了且有 diff 输出
+- [ ] 读 `.aiagents/logs/{be|fe}_<date>.log`,确认 编码 agent 真的执行了且有 diff 输出
 - [ ] 读 `.aiagents/state/events.jsonl` 末尾 30 条,确认有 `running → done` 事件链
 - [ ] 对受影响目录执行 `git status` / `git diff`,确认文件真的改了
 - [ ] 如果 log 声称"完成"但 diff 为空或不相关 → 失败
 
 ### B. Think Before Coding (理解对了吗)
 *Karpathy 原文*: "Don't assume. Don't hide confusion. Surface tradeoffs."
-- [ ] 对照 02/03 指引,Codex 是按需求做还是做歪了
+- [ ] 对照 02/03 指引,编码 agent 是按需求做还是做歪了
 - [ ] 边界条件、异常路径、空值、并发是否考虑
 - [ ] 有没有隐藏的假设没告诉用户
 - [ ] 与 `.aiagents/memory/global/bugs.md` 里历史坑做交叉对比,有没有重蹈覆辙

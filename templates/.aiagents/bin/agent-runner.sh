@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ai-agents-kit v2: 统一 Codex 执行入口。
+# ai-agents-kit v2: 统一 编码 agent 执行入口。
 # 调用链: signal -> watch-agent.sh -> agent-runner.sh -> codex -> state/event。
 #
 # 用法:

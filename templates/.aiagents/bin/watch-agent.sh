@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ai-agents-kit v2: 参数化 watcher。watcher 只监听 signal 和调度 runner,不直接调用 Codex。
+# ai-agents-kit v2: 参数化 watcher。watcher 只监听 signal 和调度 runner,不直接调用编码 agent。
 # 用法: bash watch-agent.sh <backend|frontend>
 
 set -euo pipefail
@@ -110,7 +110,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Codex-$AGENT watcher ready · $(date -Iseconds)"
+echo "$AGENT 编码 agent watcher ready · $(date -Iseconds)"
 echo "    监听 $SIG_DIR/task_ready_$AGENT 和 $SIG_DIR/bugfix_$AGENT"
 write_worker "running"
 write_heartbeat
