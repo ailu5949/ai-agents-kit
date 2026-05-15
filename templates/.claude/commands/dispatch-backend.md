@@ -12,9 +12,14 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 ---
 
 **用法**:
-- `/dispatch-backend` — 用 agent 默认 provider
-- `/dispatch-backend --provider claude` — 这次用 Claude Code
+- `/dispatch-backend` — 用 agent 默认 provider + 默认 model
+- `/dispatch-backend --provider claude` — 这次用 Claude Code (model 走配置默认)
+- `/dispatch-backend --provider claude --model sonnet` — Claude Code + sonnet 模型
+- `/dispatch-backend --provider claude --model claude-sonnet-4-5` — Claude Code + 完整模型名
+- `/dispatch-backend --model haiku` — 当前 provider 改用 haiku (轻量任务省钱)
 - `/dispatch-backend --provider codex --timeout 3600` — 切 codex + 自定义超时
+
+**model 优先级**: `--model` flag > `agents.<a>.model`(config.json) > `providers.<p>.model`(config.json) > 空(让 CLI 自己选默认)。
 
 **第一步 — 派发**:
 `bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.aiagents/bin/agentctl.sh" dispatch $ARGUMENTS backend`

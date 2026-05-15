@@ -7,7 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 provider_build_cmd() {
   # Codex reads prompt from stdin when "-" is passed as positional.
-  echo "cd '$WORK_ABS' && '$PROVIDER_BIN' exec $PROVIDER_ARGS -"
+  # v3.4.1: --model 支持 (codex CLI 用 GPT-5 / GPT-5-codex 等, 默认让 codex 自己选)
+  # PROVIDER_MODEL 来源: dispatch --model flag > agents.<a>.model > providers.codex.model
+  local model_arg=""
+  [ -n "${PROVIDER_MODEL:-}" ] && model_arg="--model $PROVIDER_MODEL"
+  echo "cd '$WORK_ABS' && '$PROVIDER_BIN' exec $PROVIDER_ARGS $model_arg -"
 }
 
 provider_evaluate_completion() {

@@ -9,7 +9,8 @@
 #   bash agentctl.sh logs                                          # 列所有日志路径 + 末尾快照(不 follow)
 #   bash agentctl.sh logs <agent> [pretty|worker|raw]              # tail -F 单个日志(默认 pretty)
 #   bash agentctl.sh logs both                                     # tail -F backend + frontend pretty
-#   bash agentctl.sh dispatch [--provider X] [--timeout N] <kind>  # 派发任务(backend|frontend|bugfix-backend|bugfix-frontend)
+#   bash agentctl.sh dispatch [--provider X] [--timeout N] [--model M] <kind>  # 派发任务(backend|frontend|bugfix-backend|bugfix-frontend)
+#                                # --model: 单次覆盖 claude/codex CLI 的 --model 参数 (e.g. opus|sonnet|haiku)
 #   bash agentctl.sh wait backend [seconds]                        # 阻塞等待 done/failed/timeout
 #   bash agentctl.sh watch backend                                 # 启动单个 watcher (前台,通常由 up 子命令后台调)
 #   bash agentctl.sh memory "经验文本"                            # 写一条记忆到 memory/global/patterns.md
@@ -290,19 +291,20 @@ PY
 }
 
 dispatch_agent() {
-  local kind="$1" provider_override="${2:-}" timeout_override="${3:-}" spec signal
+  local kind="$1" provider_override="${2:-}" timeout_override="${3:-}" model_override="${4:-}" spec signal
   spec="$(spec_path "$kind")"
   signal="$(signal_path "$kind")"
   [ -f "$spec" ] || { echo "派发失败,规格文件不存在: $spec" >&2; exit 3; }
-  "$PYTHON_BIN" - "$kind" "$spec" "$signal" "$provider_override" "$timeout_override" <<'PY'
+  "$PYTHON_BIN" - "$kind" "$spec" "$signal" "$provider_override" "$timeout_override" "$model_override" <<'PY'
 import json, sys, datetime
-kind, spec, signal, provider_override, timeout_override = sys.argv[1:6]
+kind, spec, signal, provider_override, timeout_override, model_override = sys.argv[1:7]
 payload = {
     "kind": kind,
     "spec": spec,
     "dispatched_at": datetime.datetime.now().astimezone().isoformat(),
     "provider_override": provider_override,
     "timeout_override": timeout_override,
+    "model_override": model_override,
 }
 open(signal, "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False) + "\n")
 PY
@@ -312,6 +314,7 @@ PY
   echo "   spec: $spec"
   [ -n "$provider_override" ] && echo "   provider: $provider_override"
   [ -n "$timeout_override" ] && echo "   timeout: ${timeout_override}s"
+  [ -n "$model_override" ] && echo "   model: $model_override"
 }
 
 # ---------- wait ----------
@@ -805,9 +808,10 @@ case "$COMMAND" in
     ;;
   status) show_status ;;
   dispatch)
-    # Parse optional --provider and --timeout flags, then <kind>
+    # Parse optional --provider / --timeout / --model flags, then <kind>
     _dispatch_provider=""
     _dispatch_timeout=""
+    _dispatch_model=""
     _dispatch_kind=""
     shift  # remove "dispatch" from positional params; remaining are $@
     while [ $# -gt 0 ]; do
@@ -822,6 +826,12 @@ case "$COMMAND" in
           shift
           [ $# -gt 0 ] || { echo "Error: --timeout requires an argument" >&2; exit 2; }
           _dispatch_timeout="$1"
+          shift
+          ;;
+        --model)
+          shift
+          [ $# -gt 0 ] || { echo "Error: --model requires an argument (e.g. opus|sonnet|haiku 或完整模型名)" >&2; exit 2; }
+          _dispatch_model="$1"
           shift
           ;;
         -*)
@@ -841,7 +851,7 @@ case "$COMMAND" in
     if [ -n "$_dispatch_provider" ]; then
       validate_provider "$_dispatch_provider"
     fi
-    dispatch_agent "$_dispatch_kind" "$_dispatch_provider" "$_dispatch_timeout"
+    dispatch_agent "$_dispatch_kind" "$_dispatch_provider" "$_dispatch_timeout" "$_dispatch_model"
     ;;
   wait) wait_agent "$TARGET" "$WAIT_SECONDS" ;;
   watch) bash "$BIN_DIR/watch-agent.sh" "$TARGET" ;;

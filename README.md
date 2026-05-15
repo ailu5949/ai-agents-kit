@@ -8,6 +8,93 @@
 
 通过 `install.sh` / `install.ps1` 把模板幂等安装到目标项目,**目标项目不会依赖这个目录**(安装后可以把 kit 挪走或删掉,项目仍能独立运行)。
 
+## v3.4.1 — 副 agent model 选择支持(2026-05-10)
+
+**痛点**: 主 Claude 想用 Opus 4.6,副编码 agent 想用 Sonnet(省 token + 编码任务足够),但 kit 没法配:
+- 主 Claude — Claude Code 客户端自己控制(`/model opus-4-6`)
+- 副编码 agent — 调 `claude -p` / `codex exec` 时不传 `--model` 参数,只用 CLI 默认
+
+**修复**: `--model` 参数贯穿全链, 三层优先级:
+
+```
+dispatch --model flag (临时覆盖)
+  > agents.<a>.model (per-agent 默认, config.json)
+    > providers.<p>.model (per-provider 默认, config.json)
+      > 空 (CLI 用它自己的默认 model)
+```
+
+### 用法 — 三种粒度
+
+**临时覆盖(单次任务)**:
+```bash
+/dispatch-backend --provider claude --model sonnet
+/dispatch-frontend --model haiku             # 前端任务轻量, 省钱
+/dispatch-backend --model claude-sonnet-4-5  # 完整模型名也行
+```
+
+**per-agent 默认(常用配置)** — 编辑 `.aiagents/config.json`:
+```json
+{
+  "agents": {
+    "backend":  {"dir": "stock-be", "provider": "claude", "model": "sonnet"},
+    "frontend": {"dir": "stock-fe", "provider": "claude", "model": "haiku"}
+  }
+}
+```
+之后 `/dispatch-backend` 自动用 sonnet, `/dispatch-frontend` 用 haiku, 无需每次显式传。
+
+**per-provider 默认(全局)** — 编辑 `.aiagents/config.json`:
+```json
+{
+  "providers": {
+    "claude": {"bin": "claude", "args": "--dangerously-skip-permissions", "model": "sonnet"},
+    "codex":  {"bin": "codex",  "args": "--sandbox danger-full-access --skip-git-repo-check", "model": ""}
+  }
+}
+```
+所有走 claude provider 的任务都用 sonnet, 除非 agent/dispatch 层覆盖。
+
+### 典型场景: 主 Opus + 副 Sonnet
+
+**第一步 — 主 Claude 用 Opus**(Claude Code 客户端控制,跟 kit 无关):
+- 命令行: `claude --model opus-4-6 .`
+- 或客户端内: `/model opus-4-6`
+- 或 Claude Code settings.json: `"model": "claude-opus-4-6"`
+
+**第二步 — 副编码 agent 用 Sonnet**(改 `.aiagents/config.json`):
+```json
+{
+  "agents": {
+    "backend":  {"provider": "claude", "model": "sonnet"},
+    "frontend": {"provider": "claude", "model": "sonnet"}
+  }
+}
+```
+
+之后:
+- 主 Claude 跟 Lane 对话 / 审查 / 拆 spec 都用 Opus(贵但聪明)
+- 后端 / 前端编码任务用 Sonnet(便宜 + 编码够用)
+
+### 实现要点
+
+| 文件 | 改动 |
+|---|---|
+| `agentctl.sh` | `dispatch --model X` flag 解析 |
+| `agent-runner.sh` | `PROVIDER_MODEL` 三层 fallback (MODEL_OVERRIDE → agents.X.model → providers.X.model) |
+| `watch-agent.sh` | `parse_signal_overrides` 加 MODEL_OVERRIDE 字段 |
+| `providers/claude.sh` | build_cmd 拼 `--model $PROVIDER_MODEL` |
+| `providers/codex.sh` | 同样(codex CLI 也支持 --model,可选 GPT-5 系列) |
+| `install.sh` | config.json schema 加 `"model": ""` 占位 |
+| `dispatch-backend.md` / `dispatch-frontend.md` | 用法说明 + 优先级表 |
+
+### 已装项目升级
+
+```bash
+cd D:/dev/ai/workspace/your-project
+bash /c/Users/mi/ai-agents-kit/install.sh --yes      # 幂等, 保留现有 config
+# 然后编辑 .aiagents/config.json 加 model 字段 (install 不会自动加, 因为已有 config 跳过 rewrite)
+```
+
 ## v3.4.0 — 自动轮询 + 角色名通用化 + 迁移指南(2026-05-10)
 
 **3 个改动**:

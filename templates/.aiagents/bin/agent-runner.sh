@@ -102,8 +102,14 @@ if [ -z "$PROVIDER_BIN" ] || { [ "$PROVIDER" = "codex" ] && [ -z "$PROVIDER_ARGS
   [ -n "$legacy_bin" ] && [ -z "$PROVIDER_BIN" ] && PROVIDER_BIN="$legacy_bin"
   [ -n "$legacy_args" ] && [ -z "$PROVIDER_ARGS" ] && PROVIDER_ARGS="$legacy_args"
 fi
-[ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "codex" ] && PROVIDER_ARGS="--dangerously-bypass-approvals-and-sandbox"
+[ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "codex" ] && PROVIDER_ARGS="--sandbox danger-full-access --skip-git-repo-check"
 [ -z "$PROVIDER_ARGS" ] && [ "$PROVIDER" = "claude" ] && PROVIDER_ARGS="--dangerously-skip-permissions"
+
+# v3.4.1 model selection (--model flag, agents.<a>.model, providers.<p>.model 三层)
+# 优先级: dispatch --model flag (MODEL_OVERRIDE) > agents.<a>.model > providers.<p>.model > 空 (claude/codex CLI 用 default)
+PROVIDER_MODEL="${MODEL_OVERRIDE:-}"
+[ -z "$PROVIDER_MODEL" ] && PROVIDER_MODEL="$(config_value "agents.${AGENT}.model" "")"
+[ -z "$PROVIDER_MODEL" ] && PROVIDER_MODEL="$(config_value "providers.${PROVIDER}.model" "")"
 
 # ---------- 桌面通知 (v3.1) — Lane 离线时唯一的回路 ----------
 # 设计:
@@ -397,7 +403,7 @@ fi
 cat "$SPEC" >> "$PROMPT_FILE"
 
 # Export env for adapter functions
-export PROVIDER_BIN PROVIDER_ARGS PROVIDER_SUBCMD WORK_ABS LOG_FILE="$LOG" BIN_DIR PYTHON_BIN
+export PROVIDER_BIN PROVIDER_ARGS PROVIDER_SUBCMD PROVIDER_MODEL WORK_ABS LOG_FILE="$LOG" BIN_DIR PYTHON_BIN
 
 CMD_TEMPLATE="$(provider_build_cmd)"
 

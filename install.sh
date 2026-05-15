@@ -488,8 +488,9 @@ else:
             "frontend": {"dir": fd, "stack": fs, "provider": "codex", "test_cmd": ftc, "lint_cmd": flc},
         },
         "providers": {
-            "codex":  {"bin": cb, "args": ca, "timeout": int(cto), "subcommand": "exec", "stdin_supported": True},
-            "claude": {"bin": "claude", "args": "--dangerously-skip-permissions", "timeout": 2400, "subcommand": "-p", "stdin_supported": True},
+            # model 字段为空时让 CLI 走默认; Lane 可改 "sonnet" / "haiku" / 完整模型名做 per-provider 默认
+            "codex":  {"bin": cb, "args": ca, "model": "", "timeout": int(cto), "subcommand": "exec", "stdin_supported": True},
+            "claude": {"bin": "claude", "args": "--dangerously-skip-permissions", "model": "", "timeout": 2400, "subcommand": "-p", "stdin_supported": True},
         },
         "workflow": {"max_retry": 3, "require_review_before_frontend": True, "human_override_after_retry": 3},
         "paths": {},
@@ -537,8 +538,8 @@ elif command -v jq >/dev/null 2>&1; then
          frontend: {dir: $fd, stack: $fs, provider: "codex", test_cmd: $ftc, lint_cmd: $flc}
        },
        providers: {
-         codex:  {bin: $cb, args: $ca, timeout: $cto, subcommand: "exec", stdin_supported: true},
-         claude: {bin: "claude", args: "--dangerously-skip-permissions", timeout: 2400, subcommand: "-p", stdin_supported: true}
+         codex:  {bin: $cb, args: $ca, model: "", timeout: $cto, subcommand: "exec", stdin_supported: true},
+         claude: {bin: "claude", args: "--dangerously-skip-permissions", model: "", timeout: 2400, subcommand: "-p", stdin_supported: true}
        },
        workflow: {max_retry: 3, require_review_before_frontend: true, human_override_after_retry: 3},
        paths: {

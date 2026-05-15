@@ -16,7 +16,11 @@ provider_build_cmd() {
   # Lane 卡在 watcher "🔔 检测到新任务" 提示后长时间黑盒。
   # stream-json 让每个工具调用 / 文本块实时进 log,但 raw JSON 人眼读累 — 所以用 pretty filter 转。
   local pretty_filter="$BIN_DIR/providers/_stream_json_pretty.py"
-  echo "cd '$WORK_ABS' && '$PROVIDER_BIN' -p $PROVIDER_ARGS --output-format stream-json --verbose 2>&1 | tee -a '${LOG_FILE}.raw' | '$PYTHON_BIN' '$pretty_filter'"
+  # v3.4.1: --model 支持 (e.g. opus / sonnet / haiku 或完整模型名)
+  # PROVIDER_MODEL 来源优先级: dispatch --model flag > agents.<a>.model > providers.claude.model > 空 (CLI 用默认)
+  local model_arg=""
+  [ -n "${PROVIDER_MODEL:-}" ] && model_arg="--model $PROVIDER_MODEL"
+  echo "cd '$WORK_ABS' && '$PROVIDER_BIN' -p $PROVIDER_ARGS $model_arg --output-format stream-json --verbose 2>&1 | tee -a '${LOG_FILE}.raw' | '$PYTHON_BIN' '$pretty_filter'"
 }
 
 provider_evaluate_completion() {

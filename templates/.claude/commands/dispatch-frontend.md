@@ -12,8 +12,9 @@ allowed-tools: Bash(bash .aiagents/bin/agentctl.sh:*), Bash(bash *.aiagents/bin/
 ---
 
 **用法**:
-- `/dispatch-frontend` — 用 agent 默认 provider
-- `/dispatch-frontend --provider claude` — 这次用 Claude Code
+- `/dispatch-frontend` — 用 agent 默认 provider + 默认 model
+- `/dispatch-frontend --provider claude --model sonnet` — Claude Code + sonnet 模型
+- `/dispatch-frontend --model haiku` — 当前 provider 改用 haiku (前端任务轻量省钱)
 - `/dispatch-frontend --provider codex --timeout 3600` — 切 codex + 自定义超时
 
 **第一步 — 派发**:
