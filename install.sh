@@ -41,15 +41,19 @@ MARKER_END_V1="<!-- ai-agents-kit:end v1 -->"
 AUTO_YES=0
 MIGRATE_V1=0
 STACK_PRESET=""
+WITH_DESIGN_DOC=0
+WITH_TEST_CASES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) AUTO_YES=1 ;;
     --migrate-v1) MIGRATE_V1=1 ;;
     --stack) shift; STACK_PRESET="${1:-}" ;;
     --stack=*) STACK_PRESET="${1#--stack=}" ;;
+    --with-design-doc) WITH_DESIGN_DOC=1 ;;
+    --with-test-cases) WITH_TEST_CASES=1 ;;
     --help|-h)
       cat <<'USAGE'
-用法: bash install.sh [--yes] [--stack <preset>] [--migrate-v1]
+用法: bash install.sh [--yes] [--stack <preset>] [--with-design-doc] [--with-test-cases] [--migrate-v1]
 
 选项:
   --yes, -y          非交互, 用所有默认值 (空项目默认走 python-light 预设)
@@ -60,13 +64,19 @@ while [ $# -gt 0 ]; do
                        java-gradle     Spring Boot Gradle + Vite+React
                        go              Go+Gin + Vite+React
                        node-fullstack  Fastify + Next.js
+  --with-design-doc  启用「设计文档」可选阶段: 主 Claude 在 01-需求后产 01.5-设计.md
+                     (架构 / 数据模型 / 接口契约 / 状态机 / 关键决策). 默认关闭.
+  --with-test-cases  启用「测试用例」可选阶段: 主 Claude 产 01.6-测试用例.md
+                     (用例 ID + Given/When/Then + 反向对齐验收点). 默认关闭.
   --migrate-v1       从 v1 旧目录结构迁移
   --help, -h         显示本帮助
 
 示例:
-  bash install.sh                                   # 交互式 (会问规模 + 栈 + 命令)
-  bash install.sh --yes                             # 非交互, python-light 默认
+  bash install.sh                                   # 交互式 (会问规模 + 栈 + 命令 + workflow flags)
+  bash install.sh --yes                             # 非交互, python-light 默认, workflow 全关
   bash install.sh --yes --stack java-enterprise     # 非交互, 强制 Java
+  bash install.sh --yes --with-design-doc           # 非交互, 启用设计文档
+  bash install.sh --yes --with-design-doc --with-test-cases   # 两个都开
 USAGE
       exit 0 ;;
     *) echo "未知参数: $1 (用 --help 看用法)"; exit 2 ;;
@@ -142,6 +152,27 @@ ask() {
   else
     eval "$var=\$cur"
   fi
+}
+
+# ask_bool VAR "prompt 文本" 0|1   # def=1 表示默认 yes
+# --yes 模式下保持现值不问 (CLI flag 已设置过的优先)
+ask_bool() {
+  local var="$1" prompt="$2" def="${3:-0}"
+  local cur="${!var:-$def}"
+  if [ $AUTO_YES -eq 1 ]; then
+    eval "$var=\$cur"
+    echo "  $var = ${cur}"
+    return
+  fi
+  local hint
+  if [ "$cur" = 1 ]; then hint="Y/n"; else hint="y/N"; fi
+  read -r -p "$prompt [$hint]: " input
+  case "${input,,}" in
+    y|yes|1|true) eval "$var=1" ;;
+    n|no|0|false) eval "$var=0" ;;
+    "")           eval "$var=\$cur" ;;
+    *)            eval "$var=\$cur"; echo "  ⚠️  无法识别 '$input', 保留默认 $cur" ;;
+  esac
 }
 
 detect_stack() {
@@ -303,6 +334,15 @@ ask FRONTEND_TEST_CMD "前端测试命令"            "npm test"
 ask BACKEND_LINT_CMD  "后端 lint 命令"          "ruff check ."
 ask FRONTEND_LINT_CMD "前端 lint 命令"          "npm run lint"
 ask API_CONTRACT_PATH "现有 API 契约路径(可空)" ""
+
+# ---------- 可选阶段产物 (workflow flags) ----------
+# 设计文档 / 测试用例不是所有项目都需要, 默认全关. CLI flag (--with-design-doc /
+# --with-test-cases) 已置 1 时, 交互模式直接确认; 否则默认 N.
+echo
+echo "📐 可选阶段产物 (复杂项目推荐启用, 简单项目可跳过):"
+ask_bool WITH_DESIGN_DOC  "  启用「设计文档」阶段 (产 01.5-设计.md: 架构 / 数据模型 / 接口契约)" "$WITH_DESIGN_DOC"
+ask_bool WITH_TEST_CASES  "  启用「测试用例」阶段 (产 01.6-测试用例.md: Given/When/Then 用例表)" "$WITH_TEST_CASES"
+
 CODEX_BIN_DEFAULT="${CODEX_BIN:-codex}"
 # Codex 默认 args: --full-auto 会触 Windows sandbox 卡死(PowerShell command 失败,memory bugs.md
 # 多次记录),用 --sandbox danger-full-access --skip-git-repo-check 让 codex 全访问宿主 +
@@ -414,7 +454,7 @@ if [ -f "$CONF" ]; then
 else
   echo "🔧 生成 .claude/agents.conf(向后兼容,KV 格式)..."
   cat > "$CONF" <<EOF
-# 三 Agent 协作工作流 — 项目级配置(被 hook 脚本 source,向后兼容 v1)
+# 多Agent协作工作流 — 项目级配置(被 hook 脚本 source,向后兼容 v1)
 # v2 起 .aiagents/config.json 是 single source of truth,本文件仅做 fallback。
 BACKEND_DIR="$BACKEND_DIR"
 FRONTEND_DIR="$FRONTEND_DIR"
@@ -442,9 +482,12 @@ write_v3_config() {
       "$BACKEND_STACK" "$FRONTEND_STACK" \
       "$BACKEND_TEST_CMD" "$FRONTEND_TEST_CMD" \
       "$BACKEND_LINT_CMD" "$FRONTEND_LINT_CMD" \
-      "$CODEX_BIN_DEFAULT" "$CODEX_ARGS_DEFAULT" "$CODEX_TIMEOUT_DEFAULT" <<'PY'
+      "$CODEX_BIN_DEFAULT" "$CODEX_ARGS_DEFAULT" "$CODEX_TIMEOUT_DEFAULT" \
+      "$WITH_DESIGN_DOC" "$WITH_TEST_CASES" <<'PY'
 import json, os, sys
-path, bd, fd, bs, fs, btc, ftc, blc, flc, cb, ca, cto = sys.argv[1:13]
+path, bd, fd, bs, fs, btc, ftc, blc, flc, cb, ca, cto, wdd, wtc = sys.argv[1:15]
+with_design = wdd == "1"
+with_tests  = wtc == "1"
 
 # Detect existing config
 existing = None
@@ -454,9 +497,29 @@ if os.path.exists(path):
     except Exception:
         existing = None
 
-# v3 already -> skip (preserve customizations)
+# v3 already -> 保留全部既有定制, 但仍要保证 workflow flags 存在 (idempotent 补齐)
 if existing and existing.get("providers"):
-    print("[install] config.json is already v3 (has providers block) -- skipping rewrite", file=sys.stderr)
+    wf = existing.setdefault("workflow", {})
+    needs_save = False
+    if "design_doc" not in wf:
+        wf["design_doc"] = {"enabled": False, "spec_file": "docs/ai-agents/specs/01.5-设计.md"}
+        needs_save = True
+    if "test_cases" not in wf:
+        wf["test_cases"] = {"enabled": False, "spec_file": "docs/ai-agents/specs/01.6-测试用例.md"}
+        needs_save = True
+    if with_design and not wf["design_doc"]["enabled"]:
+        wf["design_doc"]["enabled"] = True
+        needs_save = True
+    if with_tests and not wf["test_cases"]["enabled"]:
+        wf["test_cases"]["enabled"] = True
+        needs_save = True
+    if needs_save:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        print(f"[install] v3 config preserved; workflow updated (design_doc.enabled={wf['design_doc']['enabled']}, test_cases.enabled={wf['test_cases']['enabled']})", file=sys.stderr)
+    else:
+        print("[install] config.json is already v3 -- skipping rewrite", file=sys.stderr)
     sys.exit(0)
 
 # v2 detected -> migrate
@@ -521,6 +584,17 @@ else:
         "paths": {},
     }
 
+# Optional stage outputs (idempotent: 已有项目重跑也能加上)
+new_cfg.setdefault("workflow", {})
+wf = new_cfg["workflow"]
+wf.setdefault("design_doc",  {"enabled": False, "spec_file": "docs/ai-agents/specs/01.5-设计.md"})
+wf.setdefault("test_cases",  {"enabled": False, "spec_file": "docs/ai-agents/specs/01.6-测试用例.md"})
+# CLI / 交互显式设置过则覆盖 (空项目首装 + 已装项目重跑加 flag 都生效)
+if with_design:
+    wf["design_doc"]["enabled"] = True
+if with_tests:
+    wf["test_cases"]["enabled"] = True
+
 # Ensure paths defaults (always set; existing may have partial)
 default_paths = {
     "specs": "docs/ai-agents/specs",
@@ -547,38 +621,55 @@ if [ -n "$_python_found" ]; then
   write_v3_config "$CFG_JSON"
 elif command -v jq >/dev/null 2>&1; then
   # jq-only fallback: always writes fresh v3 (no migration support without python)
-  jq -n \
-    --arg bd  "$BACKEND_DIR"          --arg fd  "$FRONTEND_DIR" \
-    --arg bs  "$BACKEND_STACK"        --arg fs  "$FRONTEND_STACK" \
-    --arg btc "$BACKEND_TEST_CMD"     --arg ftc "$FRONTEND_TEST_CMD" \
-    --arg blc "$BACKEND_LINT_CMD"     --arg flc "$FRONTEND_LINT_CMD" \
-    --arg cb  "$CODEX_BIN_DEFAULT"    --arg ca  "$CODEX_ARGS_DEFAULT" \
-    --argjson cto "$CODEX_TIMEOUT_DEFAULT" \
-    '{
-       version: "3.0.0",
-       namespace: "ai-agents-kit",
-       default_provider: "codex",
-       agents: {
-         backend:  {dir: $bd, stack: $bs, provider: "codex", test_cmd: $btc, lint_cmd: $blc},
-         frontend: {dir: $fd, stack: $fs, provider: "codex", test_cmd: $ftc, lint_cmd: $flc}
-       },
-       providers: {
-         codex:  {bin: $cb, args: $ca, model: "", timeout: $cto, subcommand: "exec", stdin_supported: true},
-         claude: {bin: "claude", args: "--dangerously-skip-permissions", model: "", timeout: 2400, subcommand: "-p", stdin_supported: true}
-       },
-       workflow: {max_retry: 3, require_review_before_frontend: true, human_override_after_retry: 3},
-       paths: {
-         specs: "docs/ai-agents/specs",
-         reviews: "docs/ai-agents/reviews",
-         retrospectives: "docs/ai-agents/retrospectives",
-         signals: ".aiagents/signals",
-         logs: ".aiagents/logs",
-         state: ".aiagents/state",
-         memory: ".aiagents/memory",
-         prompts: ".aiagents/prompts",
-         runtime: ".aiagents/runtime"
-       }
-     }' > "$CFG_JSON"
+  # 注: jq fallback 不支持已装项目的 in-place workflow flag 更新 (那条路径需要 python).
+  # 若已装项目重跑 install 且没装 python -- 已有 config.json 不动, flag 修改请手动编辑.
+  if [ -f "$CFG_JSON" ]; then
+    echo "  ⚠️  config.json 已存在 + 当前是 jq fallback (无 python), 跳过 rewrite. 改 workflow 请手编辑."
+  else
+    _design_enabled=false; _tests_enabled=false
+    [ "$WITH_DESIGN_DOC" = 1 ] && _design_enabled=true
+    [ "$WITH_TEST_CASES" = 1 ] && _tests_enabled=true
+    jq -n \
+      --arg bd  "$BACKEND_DIR"          --arg fd  "$FRONTEND_DIR" \
+      --arg bs  "$BACKEND_STACK"        --arg fs  "$FRONTEND_STACK" \
+      --arg btc "$BACKEND_TEST_CMD"     --arg ftc "$FRONTEND_TEST_CMD" \
+      --arg blc "$BACKEND_LINT_CMD"     --arg flc "$FRONTEND_LINT_CMD" \
+      --arg cb  "$CODEX_BIN_DEFAULT"    --arg ca  "$CODEX_ARGS_DEFAULT" \
+      --argjson cto "$CODEX_TIMEOUT_DEFAULT" \
+      --argjson design "$_design_enabled" \
+      --argjson tests  "$_tests_enabled" \
+      '{
+         version: "3.0.0",
+         namespace: "ai-agents-kit",
+         default_provider: "codex",
+         agents: {
+           backend:  {dir: $bd, stack: $bs, provider: "codex", test_cmd: $btc, lint_cmd: $blc},
+           frontend: {dir: $fd, stack: $fs, provider: "codex", test_cmd: $ftc, lint_cmd: $flc}
+         },
+         providers: {
+           codex:  {bin: $cb, args: $ca, model: "", timeout: $cto, subcommand: "exec", stdin_supported: true},
+           claude: {bin: "claude", args: "--dangerously-skip-permissions", model: "", timeout: 2400, subcommand: "-p", stdin_supported: true}
+         },
+         workflow: {
+           max_retry: 3,
+           require_review_before_frontend: true,
+           human_override_after_retry: 3,
+           design_doc: {enabled: $design, spec_file: "docs/ai-agents/specs/01.5-设计.md"},
+           test_cases: {enabled: $tests,  spec_file: "docs/ai-agents/specs/01.6-测试用例.md"}
+         },
+         paths: {
+           specs: "docs/ai-agents/specs",
+           reviews: "docs/ai-agents/reviews",
+           retrospectives: "docs/ai-agents/retrospectives",
+           signals: ".aiagents/signals",
+           logs: ".aiagents/logs",
+           state: ".aiagents/state",
+           memory: ".aiagents/memory",
+           prompts: ".aiagents/prompts",
+           runtime: ".aiagents/runtime"
+         }
+       }' > "$CFG_JSON"
+  fi
 else
   echo "❌ 需要 python 或 jq 生成 config.json"; exit 1
 fi
@@ -623,7 +714,7 @@ rm -f "$TEMPLATE_SETTINGS_RENDERED"
 # ---------- 8. CLAUDE.md(v1→v2 自动升级) ----------
 CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
 TEMPLATE_CLAUDE="$TEMPLATES/CLAUDE.md"
-echo "📝 同步 CLAUDE.md 三 Agent 章节..."
+echo "📝 同步 CLAUDE.md 多Agent 章节..."
 rendered_full="$(sed \
   -e "s|<BACKEND_STACK>|$BACKEND_STACK|g" \
   -e "s|<FRONTEND_STACK>|$FRONTEND_STACK|g" \
@@ -715,15 +806,15 @@ echo "📝 部署编码 agent 子目录 CLAUDE.md..."
 deploy_agent_claude backend "$BACKEND_DIR"
 deploy_agent_claude frontend "$FRONTEND_DIR"
 
-# ---------- 9. start-agents.sh ----------
+# ---------- 9. (已废弃) start-agents.sh tmux 启动器 ----------
+# v3.5+ 不再支持 tmux 一屏分屏方式. 推荐统一用 `agentctl.sh up` 后台 + Cursor/VSCode
+# 多终端面板. 若旧版安装遗留了 start-agents.sh, 备份重命名(不强删, 防止 Lane 自定义过).
 START="$PROJECT_ROOT/start-agents.sh"
-if [ -f "$START" ] && ! grep -q "ai-agents-kit" "$START"; then
-  mv "$START" "$START.bak.$(date +%s)"
-  echo "🪟 备份已有 start-agents.sh"
+if [ -f "$START" ] && grep -q "ai-agents-kit" "$START"; then
+  mv "$START" "$START.deprecated.$(date +%s)"
+  echo "🗑️  已废弃 tmux 启动方式: start-agents.sh → $(basename "$START").deprecated.*"
+  echo "    新启动: bash .aiagents/bin/agentctl.sh up"
 fi
-cp "$TEMPLATES/start-agents.sh" "$START"
-sed -i '1a # ai-agents-kit v2 generated' "$START" 2>/dev/null || true
-chmod +x "$START"
 
 # ---------- 10. .gitignore ----------
 GI="$PROJECT_ROOT/.gitignore"
@@ -853,6 +944,7 @@ check_consistency() {
     *ruff*|*flake*|*black*) [ "$expected" != "python" ] && warnings+=("$side LINT_CMD=$lint_cmd 与 $expected 栈不符") ;;
     *eslint*|*npm\ run\ lint*) [ "$expected" != "node" ] && warnings+=("$side LINT_CMD=$lint_cmd 与 $expected 栈不符") ;;
   esac
+  return 0   # 显式 0: 否则 case 块最后一个 [ ... ] 测试返回 false 时, 函数 return 1, set -e 杀脚本
 }
 check_consistency backend  "$BACKEND_STACK"  "$BACKEND_TEST_CMD"  "$BACKEND_LINT_CMD"
 check_consistency frontend "$FRONTEND_STACK" "$FRONTEND_TEST_CMD" "$FRONTEND_LINT_CMD"
@@ -874,16 +966,13 @@ else
 fi
 echo "==========================================="
 echo
-echo "  方案② (无 tmux,推荐 Cursor 三终端):"
+echo "  推荐启动 (后台 watcher + Cursor/VSCode 多终端面板):"
 echo "    面板 1> claude ."
-echo "    面板 2> bash .aiagents/bin/agentctl.sh watch backend"
-echo "    面板 3> bash .aiagents/bin/agentctl.sh watch frontend"
-echo
-echo "  方案① (tmux 分屏,Linux/WSL):"
-echo "    bash ./start-agents.sh"
+echo "    面板 2> bash .aiagents/bin/agentctl.sh up           # 起后端 + 前端 watcher (一次性)"
+echo "    面板 3> bash .aiagents/bin/agentctl.sh logs both    # 监控实时日志 (可选)"
 echo
 echo "  Windows PowerShell 等价:"
-echo "    pwsh .aiagents\\bin\\agentctl.ps1 watch backend"
+echo "    pwsh .aiagents\\bin\\agentctl.ps1 up"
 echo
 echo "  常用命令:"
 echo "    bash .aiagents/bin/agentctl.sh status"
@@ -892,6 +981,12 @@ echo "    bash .aiagents/bin/agentctl.sh memory \"一条经验\""
 echo
 echo "  手册: $PROJECT_ROOT/docs/ai-agents/README.md"
 echo "  配置: $CFG_JSON  +  $CONF (KV 兼容)"
+echo
+echo "  📐 可选阶段产物 (workflow flags):"
+if [ "$WITH_DESIGN_DOC" = 1 ]; then echo "    ✅ 设计文档     → 主 Claude 会产 docs/ai-agents/specs/01.5-设计.md"
+                              else echo "    ⬜ 设计文档     (关) — 改 .aiagents/config.json workflow.design_doc.enabled=true 或重跑 install --with-design-doc"; fi
+if [ "$WITH_TEST_CASES" = 1 ]; then echo "    ✅ 测试用例     → 主 Claude 会产 docs/ai-agents/specs/01.6-测试用例.md"
+                              else echo "    ⬜ 测试用例     (关) — 改 .aiagents/config.json workflow.test_cases.enabled=true 或重跑 install --with-test-cases"; fi
 echo
 
 # ---------- v3.1 桌面通知提示 ----------

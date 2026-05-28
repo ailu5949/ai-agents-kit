@@ -1,6 +1,6 @@
-# 三 Agent 协作工作流 — 操作手册 (v2)
+# 多Agent协作工作流初始化脚手架
 
-> 本手册由 **ai-agents-kit v2** 安装。使用前请确认 `.aiagents/config.json` 里的目录和命令已改成你项目的值。
+> 本手册由 **ai-agents-kit** 安装。使用前请确认 `.aiagents/config.json` 里的目录和命令已改成你项目的值。
 
 ## 角色分工
 
@@ -13,17 +13,21 @@
 
 ## 产物编号
 
-| 文件 | 产出者 | 说明 |
-|------|--------|------|
-| `specs/01-需求.md` | Claude | 需求拆解 + 验收标准 |
-| `specs/02-后端编码.md` | Claude | 给后端编码 agent 的指令单 |
-| `specs/03-前端编码.md` | Claude | 给前端编码 agent 的指令单 |
-| `specs/04-Bug修复-backend.md` | Claude | 审查失败时生成 |
-| `specs/04-Bug修复-frontend.md` | Claude | 审查失败时生成 |
-| `reviews/backend-review.md` | Claude | 每轮后端审查追加一段 |
-| `reviews/frontend-review.md` | Claude | 每轮前端审查追加一段 |
-| `retrospectives/<日期>-retro.md` | Claude | 完整需求结束后的复盘 |
-| `specs/00-交接.md` | Claude | 切换模型前生成 |
+| 文件 | 产出者 | 触发条件 | 说明 |
+|------|--------|---------|------|
+| `specs/01-需求.md` | Claude | 永远 | 需求拆解 + 验收标准 |
+| `specs/01.5-设计.md` | Claude | `workflow.design_doc.enabled` | **可选** · 架构 / 数据模型 / 接口契约 / 状态机 / 关键决策 |
+| `specs/01.6-测试用例.md` | Claude | `workflow.test_cases.enabled` | **可选** · 用例表(TC-ID / Given/When/Then)+ 边界条件 + 反向对齐验收点 |
+| `specs/02-后端编码.md` | Claude | 永远 | 给后端编码 agent 的指令单(引用 01.5 / 01.6 不重抄) |
+| `specs/03-前端编码.md` | Claude | 永远 | 给前端编码 agent 的指令单 |
+| `specs/04-Bug修复-backend.md` | Claude | 审查失败 | 修复指令单 |
+| `specs/04-Bug修复-frontend.md` | Claude | 审查失败 | 修复指令单 |
+| `reviews/backend-review.md` | Claude | 每轮审查 | 追加一段,不覆盖历史 |
+| `reviews/frontend-review.md` | Claude | 每轮审查 | 追加一段 |
+| `retrospectives/<日期>-retro.md` | Claude | 完整需求结束 | 复盘 + 回写 memory |
+| `specs/00-交接.md` | Claude | `/handover` | 切换模型/会话前的状态快照 |
+
+> **开启可选产物**:在 `install.sh` 加 `--with-design-doc --with-test-cases`,或编辑 `.aiagents/config.json` 的 `workflow.design_doc.enabled` / `workflow.test_cases.enabled`。默认两个都关,适合小需求 / Demo;复杂需求(多模块 / 多状态机 / 跨服务)建议开启。
 
 ## v2 执行链(必须显式)
 
@@ -35,35 +39,35 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 - `.aiagents/state/current.json` 才是状态权威
 - `.aiagents/state/events.jsonl` 是事件流(给调试 + 外部 Web Console 用)
 
-## 启动方式(两选一,可混用)
+## 启动方式
 
-### 方案 ① tmux 一屏分屏(Linux/WSL)
+后台 watcher + Cursor / VSCode / 任意终端的多面板布局:
 
 ```bash
-cd <项目根>
-bash ./start-agents.sh
-```
+# 面板 1 — 主 Claude
+claude .
 
-屏幕变成三窗格:上 Claude,左下 Backend 编码 agent,右下 Frontend 编码 agent。
+# 面板 2 — 一键起 backend + frontend watcher (一次性, 真后台, 关窗口不影响)
+bash .aiagents/bin/agentctl.sh up
 
-### 方案 ② Cursor / VSCode 三终端面板(推荐 Windows)
-
-```
-面板 1> claude .
-面板 2> bash .aiagents/bin/agentctl.sh watch backend
-面板 3> bash .aiagents/bin/agentctl.sh watch frontend
+# 面板 3 (可选) — 监控双 agent 实时日志
+bash .aiagents/bin/agentctl.sh logs both
 ```
 
 PowerShell 等价:
 
+```powershell
+pwsh .aiagents\bin\agentctl.ps1 up
+pwsh .aiagents\bin\agentctl.ps1 logs both
 ```
-面板 2> pwsh .aiagents\bin\agentctl.ps1 watch backend
-面板 3> pwsh .aiagents\bin\agentctl.ps1 watch frontend
-```
+
+停 watcher:`agentctl.sh down`(或 `agentctl.ps1 down`)。
+
+> v3.5+ 起不再支持 tmux 一屏分屏方式(`start-agents.sh`)。已装项目重跑 install 会自动备份遗留的 `start-agents.sh` 到 `.deprecated.*`。
 
 ## 日常使用流程(11 步,含复盘)
 
-1. 启动 3 个 agent(方案①或②)
+1. 启动主 Claude + 后台 watcher(见上方"启动方式")
 2. 在 Claude 面板说需求:"实现一个 /stocks 接口,前端加一个列表页"
 3. **Claude 先读 memory**(`.aiagents/memory/global/{patterns,bugs}.md` 等)
 4. Claude 产 `specs/01-需求.md` → 你确认
@@ -157,7 +161,6 @@ pwsh \\path\\to\\ai-agents-kit\\install.ps1 -MigrateV1
 │   ├── agents.conf                  # KV 配置(向后兼容,被 v1 脚本 source)
 │   └── commands/                    # 9 个 slash command
 ├── CLAUDE.md                        # Claude 主指令(v2 marker)
-├── start-agents.sh                  # tmux 启动脚本
 └── docs/ai-agents/
     ├── specs/                       # 01~04 + 00-交接
     ├── reviews/                     # 后端 + 前端审查

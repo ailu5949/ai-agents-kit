@@ -34,7 +34,7 @@ log_tail() {
 }
 
 echo "=========================================="
-echo "  三 Agent 状态快照 · $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  多Agent 状态快照 · $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=========================================="
 echo
 echo "【Backend】 $(state_of backend)"

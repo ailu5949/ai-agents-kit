@@ -22,12 +22,14 @@ import sys
 import pathlib
 
 HEADER = (
-    "# 三 Agent 协作工作流 — 项目级指令\n"
+    "# 多Agent协作工作流 — 项目级指令\n"
     "\n"
     "> 本节由 **ai-agents-kit** 安装,请勿手动编辑开头的 5 行 marker。"
     "如要升级请重跑 `install.sh` 或 `install.ps1`。\n"
     "> <!-- ai-agents-kit:start v2 -->"
 )
+# 检测旧损坏文件用 — 旧版 install 写入的是 "三 Agent" 标题,必须保留旧字符串才能数重复;
+# 修复后写回的 HEADER 自动升级到新标题(多Agent),顺手完成命名升级。
 TITLE_LINE = "# 三 Agent 协作工作流 — 项目级指令"
 
 def main():

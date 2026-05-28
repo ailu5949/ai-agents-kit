@@ -1,4 +1,4 @@
-# 三 Agent 协作工作流 — 项目级指令
+# 多Agent协作工作流 — 项目级指令
 
 > 本节由 **ai-agents-kit** 安装,请勿手动编辑开头的 5 行 marker。如要升级请重跑 `install.sh` 或 `install.ps1`。
 > <!-- ai-agents-kit:start v2 -->
@@ -13,8 +13,15 @@
    - `.aiagents/memory/global/bugs.md` — 跨项目踩过的坑
    - `.aiagents/memory/projects/context.md` — 本项目独有上下文
    - `.aiagents/memory/ideas/product-ideas.md` — 产品想法库
-3. `/status` — 确认 `.aiagents/state/current.json` 实时状态
-4. 如有交接文件,按其中"立即下一步操作"执行;如无,正常等待用户指令
+3. **读 workflow flags**(决定本项目要不要产可选阶段产物):
+   ```bash
+   jq '.workflow | {design_doc, test_cases}' .aiagents/config.json
+   ```
+   - `design_doc.enabled == true` → 本项目启用设计文档,需求拆解阶段必产 `01.5-设计.md`
+   - `test_cases.enabled == true` → 本项目启用测试用例,需求拆解阶段必产 `01.6-测试用例.md`
+   - 两个 flag 都 false(默认)→ 跳过这两个可选阶段,直接 01 → 02/03
+4. `/status` — 确认 `.aiagents/state/current.json` 实时状态
+5. 如有交接文件,按其中"立即下一步操作"执行;如无,正常等待用户指令
 
 > **切换模型说明**: 如果 token 耗尽需要换模型,在旧会话执行 `/handover` 生成状态快照。新模型读 `00-交接.md` + memory 即可无缝接管。如新模型不支持 slash command(如 DeepSeek 直接 API),直接读 00-交接.md 手动执行等价 bash 命令。
 
@@ -24,11 +31,13 @@
 
 你是 **Claude Code 主角色**,是用户(16 年 IT / Java 后端)的**唯一沟通入口**。职责:
 1. 拆解用户需求 → `docs/ai-agents/specs/01-需求.md`
-2. 生成后端编码指引 → `docs/ai-agents/specs/02-后端编码.md`
-3. 生成前端编码指引 → `docs/ai-agents/specs/03-前端编码.md`
-4. 审查编码 agent 交付物 → `docs/ai-agents/reviews/backend-review.md` / `frontend-review.md`
-5. 审查失败时生成修复指令 → `docs/ai-agents/specs/04-Bug修复-{backend|frontend}.md`
-6. 完整需求结束后复盘 → `docs/ai-agents/retrospectives/<YYYY-MM-DD>-retro.md` + 写回 memory
+2. (可选,看 `workflow.design_doc.enabled`)产出设计文档 → `docs/ai-agents/specs/01.5-设计.md`
+3. (可选,看 `workflow.test_cases.enabled`)产出测试用例 → `docs/ai-agents/specs/01.6-测试用例.md`
+4. 生成后端编码指引 → `docs/ai-agents/specs/02-后端编码.md`
+5. 生成前端编码指引 → `docs/ai-agents/specs/03-前端编码.md`
+6. 审查编码 agent 交付物 → `docs/ai-agents/reviews/backend-review.md` / `frontend-review.md`
+7. 审查失败时生成修复指令 → `docs/ai-agents/specs/04-Bug修复-{backend|frontend}.md`
+8. 完整需求结束后复盘 → `docs/ai-agents/retrospectives/<YYYY-MM-DD>-retro.md` + 写回 memory
 
 **你不直接写业务代码**。业务代码由两个编码 agent 执行:
 - Backend 编码 agent 在 `<BACKEND_DIR>`(见 `.aiagents/config.json` 或 `.claude/agents.conf`)
@@ -69,14 +78,29 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 严格按这个顺序推进,每完成一阶段产物落盘后**暂停并与用户确认**:
 
 1. **阶段 01 — 需求拆解**: 与用户对话,产出 `01-需求.md`(含验收标准)
-2. **阶段 02/03 — 编码指引**: 产出 `02-后端编码.md` 和 `03-前端编码.md`,两份可并行产出,但要让后端指引里包含需要暴露的接口清单,前端指引里引用这些接口作为依赖
-3. **阶段 派后端**: 用户确认后,执行 `/dispatch-backend`
-4. **阶段 审查后端**: Stop hook 检测到 `state.backend.state == done-awaiting-review` 时会在下一个 turn 注入提醒,届时按 **Karpathy 审查 rubric** 审查,产出或追加 `reviews/backend-review.md`
-5. **阶段 派前端**: 后端审查通过后,执行 `/dispatch-frontend`
-6. **阶段 审查前端**: 同后端
-7. **阶段 联调 + 复盘**: 告知用户手工联调;联调通过后执行 `/retrospective`
+2. **阶段 01.5 — 设计文档**(可选,看 `workflow.design_doc.enabled`):产出 `01.5-设计.md`,内容包括:
+   - 系统架构图(组件 / 调用方向 / 依赖,可用 mermaid 文本图)
+   - 数据模型(实体 + 关系 + 关键字段类型 + 约束)
+   - 接口契约(Endpoint + Method + 请求/响应 schema + 错误码,与 02 引用一致)
+   - 状态机 / 时序图(如有跨服务调用 / 异步流程 / 多状态切换)
+   - 关键设计决策(为什么这么选 + 排除掉的替代方案 + 取舍依据)
+3. **阶段 01.6 — 测试用例**(可选,看 `workflow.test_cases.enabled`):产出 `01.6-测试用例.md`,内容包括:
+   - 用例表(用例 ID `TC-001` / 场景 / Given/When/Then / 验证手段 / 预期结果)
+   - 边界条件清单(空值 / 越界 / 异常输入 / 并发 / 鉴权失败)
+   - **反向对齐**:01 里每条验收点至少 1 条用例覆盖(用例表加列 "覆盖验收点 ID")
+   - 02/03 编码合同的 § 验收点直接引用 `TC-XXX`,不再重抄场景
+4. **阶段 02/03 — 编码指引**: 产出 `02-后端编码.md` 和 `03-前端编码.md`,两份可并行产出,但要让后端指引里包含需要暴露的接口清单,前端指引里引用这些接口作为依赖
+   - 若已产 01.5,02/03 引用 01.5 的接口契约 / 数据模型,**不重复**写一遍
+   - 若已产 01.6,02/03 § 验收点用 `TC-XXX` 引用,**不重抄**用例
+5. **阶段 派后端**: 用户确认后,执行 `/dispatch-backend`
+6. **阶段 审查后端**: Stop hook 检测到 `state.backend.state == done-awaiting-review` 时会在下一个 turn 注入提醒,届时按 **Karpathy 审查 rubric** 审查,产出或追加 `reviews/backend-review.md`
+7. **阶段 派前端**: 后端审查通过后,执行 `/dispatch-frontend`
+8. **阶段 审查前端**: 同后端
+9. **阶段 联调 + 复盘**: 告知用户手工联调;联调通过后执行 `/retrospective`
 
 失败路径: 任何阶段审查不通过,生成 `04-Bug修复-{backend|frontend}.md`,执行对应 `/bugfix-*`,编码 agent 修复后回到审查阶段,最多循环 3 次(`MAX_RETRY=3`),仍失败则向用户求助。
+
+> **阶段 01.5 / 01.6 何时跳过**:`workflow.design_doc.enabled == false` 跳 01.5;`workflow.test_cases.enabled == false` 跳 01.6。Lane 可在 `.aiagents/config.json` 编辑该 flag,或重跑 `install.sh --with-design-doc --with-test-cases` 启用。默认两个都关,适合小需求 / Demo / 内部工具。复杂需求(多模块 / 多状态机 / 跨服务)建议开启。
 
 ## ⛔ 审查触发 — 硬约束(别绕过)
 

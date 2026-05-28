@@ -22,7 +22,9 @@ param(
   [int]$CodexTimeout = 1800,
   [string]$Stack = "",
   [switch]$Yes,
-  [switch]$MigrateV1
+  [switch]$MigrateV1,
+  [switch]$WithDesignDoc,
+  [switch]$WithTestCases
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +93,25 @@ function Ask([string]$Prompt, [string]$Current, [string]$Default) {
   if ($Yes) { Write-Host "  $Prompt = $val"; return $val }
   $input = Read-Host "$Prompt [$val]"
   if ($input) { return $input } else { return $val }
+}
+
+# Ask-Bool 返回 $true / $false. -CurrentTrue 表示 CLI flag 已置 true 时, 交互模式下也保留这个默认.
+function Ask-Bool([string]$Prompt, [bool]$CurrentTrue) {
+  if ($Yes) {
+    Write-Host ("  {0} = {1}" -f $Prompt, $CurrentTrue)
+    return $CurrentTrue
+  }
+  $hint = if ($CurrentTrue) { "Y/n" } else { "y/N" }
+  $input = Read-Host "$Prompt [$hint]"
+  switch -Regex ($input.ToLower()) {
+    '^(y|yes|1|true)$'  { return $true }
+    '^(n|no|0|false)$'  { return $false }
+    '^$'                { return $CurrentTrue }
+    default {
+      Write-Host "  ⚠️  无法识别 '$input', 保留默认 $CurrentTrue"
+      return $CurrentTrue
+    }
+  }
 }
 
 function Detect-Stack([string]$Dir) {
@@ -237,6 +258,12 @@ $script:BackendLintCmd  = Ask "后端 lint 命令" $script:BackendLintCmd  "ruff
 $script:FrontendLintCmd = Ask "前端 lint 命令" $script:FrontendLintCmd "npm run lint"
 $ApiContractPath        = Ask "现有 API 契约路径(可空)" $ApiContractPath ""
 
+# ---------- 可选阶段产物 (workflow flags) ----------
+Write-Host ""
+Write-Host "📐 可选阶段产物 (复杂项目推荐启用, 简单项目可跳过):"
+$script:WithDesignDocBool = Ask-Bool "  启用「设计文档」阶段 (产 01.5-设计.md: 架构 / 数据模型 / 接口契约)" ([bool]$WithDesignDoc)
+$script:WithTestCasesBool = Ask-Bool "  启用「测试用例」阶段 (产 01.6-测试用例.md: Given/When/Then 用例表)" ([bool]$WithTestCases)
+
 # ---------- 1. 创建目录骨架 ----------
 Write-Host ""
 Write-Host "📁 创建目录骨架(v2)..."
@@ -309,7 +336,7 @@ if (Test-Path $confPath) {
 } else {
   Write-Host "🔧 生成 .claude\agents.conf(向后兼容,KV 格式)..."
   $confContent = @"
-# 三 Agent 协作工作流 — 项目级配置(被 hook 脚本 source,向后兼容 v1)
+# 多Agent协作工作流 — 项目级配置(被 hook 脚本 source,向后兼容 v1)
 # v2 起 .aiagents/config.json 是 single source of truth,本文件仅做 fallback。
 BACKEND_DIR="$($script:BackendDir)"
 FRONTEND_DIR="$($script:FrontendDir)"
@@ -328,25 +355,60 @@ CODEX_TIMEOUT=$CodexTimeout
 }
 
 # ---------- 6. .aiagents/config.json ----------
-Write-Host "🧩 生成 .aiagents/config.json..."
-$config = [ordered]@{
-  version   = "2.0.0"
-  namespace = "ai-agents-kit"
-  backend   = [ordered]@{ dir = $script:BackendDir;  stack = $script:BackendStack;  test_cmd = $script:BackendTestCmd;  lint_cmd = $script:BackendLintCmd }
-  frontend  = [ordered]@{ dir = $script:FrontendDir; stack = $script:FrontendStack; test_cmd = $script:FrontendTestCmd; lint_cmd = $script:FrontendLintCmd }
-  codex     = [ordered]@{ bin = $CodexBin; args = $CodexArgs; timeout_seconds = $CodexTimeout }
-  workflow  = [ordered]@{ max_retry = 3; require_review_before_frontend = $true; human_override_after_retry = 3 }
-  paths     = [ordered]@{
-    specs = "docs/ai-agents/specs"
-    reviews = "docs/ai-agents/reviews"
-    retrospectives = "docs/ai-agents/retrospectives"
-    signals = ".aiagents/signals"
-    logs = ".aiagents/logs"
-    state = ".aiagents/state"
-    memory = ".aiagents/memory"
+# 注: install.ps1 仍是 v2 schema writer (install.sh v3 mirror 推迟到后续). workflow.design_doc /
+# workflow.test_cases 两个 flag 在 v2 schema 下也可直接写, 对 v3 兼容 (字段无冲突).
+$cfgJsonPath = Join-Path $ProjectRoot ".aiagents\config.json"
+if (Test-Path $cfgJsonPath) {
+  # 已存在 config.json -- 只就地补 workflow flags, 不重写其他配置 (与 install.sh 行为对齐)
+  Write-Host "🧩 config.json 已存在, in-place 补 workflow flags..."
+  try {
+    $existingCfg = Get-Content -Raw -Encoding UTF8 $cfgJsonPath | ConvertFrom-Json
+  } catch {
+    $existingCfg = $null
+    Write-Host "  ⚠️  无法解析现有 config.json, 跳过更新"
   }
+  if ($existingCfg) {
+    if (-not $existingCfg.workflow) {
+      $existingCfg | Add-Member -NotePropertyName workflow -NotePropertyValue ([ordered]@{}) -Force
+    }
+    if (-not $existingCfg.workflow.design_doc) {
+      $existingCfg.workflow | Add-Member -NotePropertyName design_doc -NotePropertyValue ([ordered]@{ enabled = $false; spec_file = "docs/ai-agents/specs/01.5-设计.md" }) -Force
+    }
+    if (-not $existingCfg.workflow.test_cases) {
+      $existingCfg.workflow | Add-Member -NotePropertyName test_cases -NotePropertyValue ([ordered]@{ enabled = $false; spec_file = "docs/ai-agents/specs/01.6-测试用例.md" }) -Force
+    }
+    if ($script:WithDesignDocBool) { $existingCfg.workflow.design_doc.enabled = $true }
+    if ($script:WithTestCasesBool) { $existingCfg.workflow.test_cases.enabled = $true }
+    Write-Utf8File $cfgJsonPath ($existingCfg | ConvertTo-Json -Depth 10)
+    Write-Host ("  workflow updated (design_doc.enabled={0}, test_cases.enabled={1})" -f $existingCfg.workflow.design_doc.enabled, $existingCfg.workflow.test_cases.enabled)
+  }
+} else {
+  Write-Host "🧩 生成 .aiagents/config.json..."
+  $config = [ordered]@{
+    version   = "2.0.0"
+    namespace = "ai-agents-kit"
+    backend   = [ordered]@{ dir = $script:BackendDir;  stack = $script:BackendStack;  test_cmd = $script:BackendTestCmd;  lint_cmd = $script:BackendLintCmd }
+    frontend  = [ordered]@{ dir = $script:FrontendDir; stack = $script:FrontendStack; test_cmd = $script:FrontendTestCmd; lint_cmd = $script:FrontendLintCmd }
+    codex     = [ordered]@{ bin = $CodexBin; args = $CodexArgs; timeout_seconds = $CodexTimeout }
+    workflow  = [ordered]@{
+      max_retry = 3
+      require_review_before_frontend = $true
+      human_override_after_retry = 3
+      design_doc = [ordered]@{ enabled = $script:WithDesignDocBool; spec_file = "docs/ai-agents/specs/01.5-设计.md" }
+      test_cases = [ordered]@{ enabled = $script:WithTestCasesBool; spec_file = "docs/ai-agents/specs/01.6-测试用例.md" }
+    }
+    paths     = [ordered]@{
+      specs = "docs/ai-agents/specs"
+      reviews = "docs/ai-agents/reviews"
+      retrospectives = "docs/ai-agents/retrospectives"
+      signals = ".aiagents/signals"
+      logs = ".aiagents/logs"
+      state = ".aiagents/state"
+      memory = ".aiagents/memory"
+    }
+  }
+  Write-Utf8File $cfgJsonPath ($config | ConvertTo-Json -Depth 10)
 }
-Write-Utf8File (Join-Path $ProjectRoot ".aiagents\config.json") ($config | ConvertTo-Json -Depth 10)
 
 # ---------- 7. settings.json 合并 ----------
 Write-Host "🧩 合并 .claude\settings.json..."
@@ -393,7 +455,7 @@ $existing.permissions | Add-Member -MemberType NoteProperty -Name allow -Value $
 Write-Utf8File $settingsPath ($existing | ConvertTo-Json -Depth 20)
 
 # ---------- 8. CLAUDE.md(v1→v2) ----------
-Write-Host "📝 同步 CLAUDE.md 三 Agent 章节..."
+Write-Host "📝 同步 CLAUDE.md 多Agent 章节..."
 $claudePath = Join-Path $ProjectRoot "CLAUDE.md"
 $tmplClaudeRaw = Get-Content -Raw -Encoding UTF8 (Join-Path $TemplateRoot "CLAUDE.md")
 $apiPath = if ($ApiContractPath) { $ApiContractPath } else { "(无)" }
@@ -456,13 +518,14 @@ if (Test-Path $claudePath) {
   Write-Host "  已新建 CLAUDE.md"
 }
 
-# ---------- 9. start-agents.sh ----------
+# ---------- 9. (已废弃) start-agents.sh tmux 启动器 ----------
+# v3.5+ 不再支持 tmux 一屏分屏方式. 推荐统一用 `agentctl.ps1 up` 后台 + 多终端面板.
 $startPath = Join-Path $ProjectRoot "start-agents.sh"
-if ((Test-Path $startPath) -and -not ((Get-Content -Raw -Encoding UTF8 $startPath) -match "ai-agents-kit")) {
-  Move-Item -Force $startPath "$startPath.bak.$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
-  Write-Host "🪟 备份已有 start-agents.sh"
+if ((Test-Path $startPath) -and ((Get-Content -Raw -Encoding UTF8 $startPath) -match "ai-agents-kit")) {
+  Move-Item -Force $startPath "$startPath.deprecated.$([DateTimeOffset]::Now.ToUnixTimeSeconds())"
+  Write-Host "🗑️  已废弃 tmux 启动方式: start-agents.sh → $(Split-Path $startPath -Leaf).deprecated.*"
+  Write-Host "    新启动: pwsh .aiagents\bin\agentctl.ps1 up"
 }
-Copy-Item -Force (Join-Path $TemplateRoot "start-agents.sh") $startPath
 
 # ---------- 10. .gitignore ----------
 $gi = Join-Path $ProjectRoot ".gitignore"
@@ -570,13 +633,13 @@ Write-Host "==========================================="
 if ($MigrateV1) { Write-Host "✅ v1 → v2 迁移完成" } else { Write-Host "✅ 安装完成" }
 Write-Host "==========================================="
 Write-Host ""
-Write-Host "  PowerShell 启动:"
+Write-Host "  推荐启动 (后台 watcher + Cursor/VSCode 多终端面板):"
 Write-Host "    面板 1> claude ."
-Write-Host "    面板 2> pwsh .aiagents\bin\agentctl.ps1 watch backend"
-Write-Host "    面板 3> pwsh .aiagents\bin\agentctl.ps1 watch frontend"
+Write-Host "    面板 2> pwsh .aiagents\bin\agentctl.ps1 up           # 起后端 + 前端 watcher (一次性)"
+Write-Host "    面板 3> pwsh .aiagents\bin\agentctl.ps1 logs both    # 监控实时日志 (可选)"
 Write-Host ""
 Write-Host "  Bash 等价(Cursor/Git Bash):"
-Write-Host "    bash .aiagents/bin/agentctl.sh watch backend"
+Write-Host "    bash .aiagents/bin/agentctl.sh up"
 Write-Host ""
 Write-Host "  常用命令:"
 Write-Host "    pwsh .aiagents\bin\agentctl.ps1 status"
@@ -585,3 +648,15 @@ Write-Host "    pwsh .aiagents\bin\agentctl.ps1 memory `"一条经验`""
 Write-Host ""
 Write-Host "  手册: $ProjectRoot\docs\ai-agents\README.md"
 Write-Host "  配置: $ProjectRoot\.aiagents\config.json + $confPath"
+Write-Host ""
+Write-Host "  📐 可选阶段产物 (workflow flags):"
+if ($script:WithDesignDocBool) {
+  Write-Host "    ✅ 设计文档     → 主 Claude 会产 docs/ai-agents/specs/01.5-设计.md"
+} else {
+  Write-Host "    ⬜ 设计文档     (关) — 改 .aiagents/config.json workflow.design_doc.enabled=true 或重跑 install -WithDesignDoc"
+}
+if ($script:WithTestCasesBool) {
+  Write-Host "    ✅ 测试用例     → 主 Claude 会产 docs/ai-agents/specs/01.6-测试用例.md"
+} else {
+  Write-Host "    ⬜ 测试用例     (关) — 改 .aiagents/config.json workflow.test_cases.enabled=true 或重跑 install -WithTestCases"
+}
