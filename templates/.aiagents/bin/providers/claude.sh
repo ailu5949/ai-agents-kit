@@ -20,7 +20,16 @@ provider_build_cmd() {
   # PROVIDER_MODEL 来源优先级: dispatch --model flag > agents.<a>.model > providers.claude.model > 空 (CLI 用默认)
   local model_arg=""
   [ -n "${PROVIDER_MODEL:-}" ] && model_arg="--model $PROVIDER_MODEL"
-  echo "cd '$WORK_ABS' && '$PROVIDER_BIN' -p $PROVIDER_ARGS $model_arg --output-format stream-json --verbose 2>&1 | tee -a '${LOG_FILE}.raw' | '$PYTHON_BIN' '$pretty_filter'"
+  # v3.5.1 (2026-05-29): 隔离子 agent 会话, 防 user 级插件污染.
+  #   --setting-sources project,local : 排除 user 源 → 不加载 ~/.claude 里启用的
+  #       superpowers 插件 (其 SessionStart hook 注入 "you MUST use Skill / brainstorm /
+  #       ask questions", 被 Opus 4.8 凌驾于派单 spec 之上 → 编码 agent 退化成 orchestrator,
+  #       狂调 Skill/AskUserQuestion 不落键 — choseStock P29-1-sse.e F4 实战 4 轮空转教训).
+  #       OAuth 鉴权走 keychain 不依赖 settings 源, 不受影响 (smoke 验证 PONG/exit 0).
+  #   --disallowed-tools Skill AskUserQuestion : 双保险, 即便注入仍在也调不动这俩.
+  #   注意: 不能用 --bare — 它强制 ANTHROPIC_API_KEY 鉴权, 不支持 OAuth, 会搞挂订阅登录.
+  local isolation_args="--setting-sources project,local --disallowed-tools Skill AskUserQuestion"
+  echo "cd '$WORK_ABS' && '$PROVIDER_BIN' -p $PROVIDER_ARGS $model_arg $isolation_args --output-format stream-json --verbose 2>&1 | tee -a '${LOG_FILE}.raw' | '$PYTHON_BIN' '$pretty_filter'"
 }
 
 provider_evaluate_completion() {
