@@ -497,7 +497,7 @@ if os.path.exists(path):
     except Exception:
         existing = None
 
-# v3 already -> 保留全部既有定制, 但仍要保证 workflow flags 存在 (idempotent 补齐)
+# v3 already -> 保留全部既有定制, 但仍要保证 workflow flags / notify 块存在 (idempotent 补齐)
 if existing and existing.get("providers"):
     wf = existing.setdefault("workflow", {})
     needs_save = False
@@ -513,11 +513,16 @@ if existing and existing.get("providers"):
     if with_tests and not wf["test_cases"]["enabled"]:
         wf["test_cases"]["enabled"] = True
         needs_save = True
+    # v3.6: notify.push 块 (移动端推送, 默认关 — provider 留空)
+    nt = existing.setdefault("notify", {})
+    if "push" not in nt:
+        nt["push"] = {"provider": "", "key": "", "url": "", "events": ["done", "failed", "timeout", "stale"]}
+        needs_save = True
     if needs_save:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(existing, f, ensure_ascii=False, indent=2)
             f.write("\n")
-        print(f"[install] v3 config preserved; workflow updated (design_doc.enabled={wf['design_doc']['enabled']}, test_cases.enabled={wf['test_cases']['enabled']})", file=sys.stderr)
+        print(f"[install] v3 config preserved; workflow/notify updated (design_doc.enabled={wf['design_doc']['enabled']}, test_cases.enabled={wf['test_cases']['enabled']})", file=sys.stderr)
     else:
         print("[install] config.json is already v3 -- skipping rewrite", file=sys.stderr)
     sys.exit(0)
@@ -595,6 +600,10 @@ if with_design:
 if with_tests:
     wf["test_cases"]["enabled"] = True
 
+# v3.6: notify.push 块 (移动端推送, 默认关 — Lane 填 provider/key 后启用)
+new_cfg.setdefault("notify", {}).setdefault(
+    "push", {"provider": "", "key": "", "url": "", "events": ["done", "failed", "timeout", "stale"]})
+
 # Ensure paths defaults (always set; existing may have partial)
 default_paths = {
     "specs": "docs/ai-agents/specs",
@@ -656,6 +665,9 @@ elif command -v jq >/dev/null 2>&1; then
            human_override_after_retry: 3,
            design_doc: {enabled: $design, spec_file: "docs/ai-agents/specs/01.5-设计.md"},
            test_cases: {enabled: $tests,  spec_file: "docs/ai-agents/specs/01.6-测试用例.md"}
+         },
+         notify: {
+           push: {provider: "", key: "", url: "", events: ["done","failed","timeout","stale"]}
          },
          paths: {
            specs: "docs/ai-agents/specs",

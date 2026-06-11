@@ -592,5 +592,12 @@ switch ($Command) {
   "wait"     { Wait-Agent $Target $WaitSeconds }
   "watch"    { Watch-Agent $Target }
   "memory"   { Add-Memory $Target }
+  "cost"     {
+    # v3.6: cost/doctor 复杂聚合逻辑只在 bash 版实现 — Git Bash 必装(kit 依赖), 直接转发
+    bash "$PSScriptRoot/agentctl.sh" cost
+  }
+  "doctor"   {
+    bash "$PSScriptRoot/agentctl.sh" doctor
+  }
   "release-without-verify" { Release-WithoutVerify $Target $Reason }
 }

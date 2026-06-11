@@ -147,10 +147,15 @@ fi
 notify_toast() {
   local status="$1" message="${2:-}"
   local script="$BIN_DIR/notify-toast.ps1"
-  [ -f "$script" ] || return 0
-  command -v pwsh >/dev/null 2>&1 || return 0
   local proj
   proj="$(basename "$ROOT" 2>/dev/null || echo project)"
+  # v3.6: 移动端推送(Server酱/PushPlus/Bark/ntfy)— 与 toast 并行 spawn, 同样失败静默.
+  # 配置在 config.json notify.push.provider, 未配置时 notify-push.sh 自己静默退出.
+  if [ -f "$BIN_DIR/notify-push.sh" ]; then
+    (bash "$BIN_DIR/notify-push.sh" "$AGENT" "$status" "$message" "$proj" >/dev/null 2>&1 &) || true
+  fi
+  [ -f "$script" ] || return 0
+  command -v pwsh >/dev/null 2>&1 || return 0
   (pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" \
       -Agent "$AGENT" -Status "$status" -Message "$message" -Project "$proj" \
       >/dev/null 2>&1 &) || true

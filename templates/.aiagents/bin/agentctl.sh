@@ -14,6 +14,8 @@
 #   bash agentctl.sh wait backend [seconds]                        # 阻塞等待 done/failed/timeout
 #   bash agentctl.sh watch backend                                 # 启动单个 watcher (前台,通常由 up 子命令后台调)
 #   bash agentctl.sh memory "经验文本"                            # 写一条记忆到 memory/global/patterns.md
+#   bash agentctl.sh cost                                          # token 成本汇总 (claude .raw 的 total_cost_usd 聚合)
+#   bash agentctl.sh doctor                                        # 一键诊断 (watcher/心跳/state 卡点/log 活性/建议动作)
 #   bash agentctl.sh release-without-verify <agent> "<reason>"    # 强制跳过验证,直接设置 ready-for-human
 
 set -uo pipefail
@@ -787,6 +789,262 @@ watchers_down() {
   echo "总计: $stopped 个已停 / $absent 个已无"
 }
 
+# ---------- cost: token 成本聚合 (v3.6) ----------
+# 数据源:
+#   claude — $LOG_DIR/*.raw 的 stream-json result 事件 (total_cost_usd / usage / num_turns)
+#   codex  — $LOG_DIR/{be,fe}_*.log 里的 "tokens used" 行 (best-effort, 无美元 cost)
+cost_report() {
+  "$PYTHON_BIN" - "$LOG_DIR" "$(basename "$ROOT")" <<'PY'
+import glob, json, os, re, sys, datetime
+
+log_dir, project = sys.argv[1], sys.argv[2]
+today = datetime.date.today().strftime("%Y%m%d")
+
+# date -> agent -> aggregates
+rows = {}
+def bucket(date, agent):
+    return rows.setdefault(date, {}).setdefault(agent, {
+        "tasks": 0, "cost": 0.0, "in_tok": 0, "cache_tok": 0, "out_tok": 0, "turns": 0})
+
+# --- claude .raw: result 事件 ---
+for path in sorted(glob.glob(os.path.join(log_dir, "*.raw"))):
+    name = os.path.basename(path)                      # be_20260601.log.raw
+    m = re.match(r"(be|fe)_(\d{8})", name)
+    if not m:
+        continue
+    agent = "backend" if m.group(1) == "be" else "frontend"
+    date = m.group(2)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"type":"result"' not in line and '"type": "result"' not in line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                if ev.get("type") != "result":
+                    continue
+                b = bucket(date, agent)
+                b["tasks"] += 1
+                b["cost"] += float(ev.get("total_cost_usd") or 0)
+                u = ev.get("usage") or {}
+                b["in_tok"] += int(u.get("input_tokens") or 0)
+                b["cache_tok"] += int(u.get("cache_creation_input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0)
+                b["out_tok"] += int(u.get("output_tokens") or 0)
+                b["turns"] += int(ev.get("num_turns") or 0)
+    except OSError:
+        continue
+
+# --- codex .log: "tokens used" 行 (best-effort) ---
+codex_tasks, codex_tokens = 0, 0
+for path in sorted(glob.glob(os.path.join(log_dir, "*.log"))):
+    if path.endswith(".raw") or "worker-" in os.path.basename(path):
+        continue
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.search(r"[Tt]okens used:?\s*([\d,]+)", line)
+                if m:
+                    codex_tasks += 1
+                    codex_tokens += int(m.group(1).replace(",", ""))
+    except OSError:
+        continue
+
+def fmt_tok(n):
+    if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+    if n >= 1_000: return f"{n/1_000:.0f}K"
+    return str(n)
+
+print("=" * 78)
+print(f"  Token 成本 · {project}")
+print("=" * 78)
+if not rows and not codex_tasks:
+    print("  没有可统计的数据 (claude 任务的 cost 在 .aiagents/logs/*.raw 里)")
+    sys.exit(0)
+
+if rows:
+    print(f"  {'日期':<10}{'agent':<10}{'任务':>5}{'cost($)':>10}{'输入tok':>10}{'缓存tok':>10}{'输出tok':>10}{'turns':>7}")
+    print("  " + "-" * 74)
+    total = {"tasks": 0, "cost": 0.0, "in_tok": 0, "cache_tok": 0, "out_tok": 0, "turns": 0}
+    today_total = dict(total)
+    for date in sorted(rows):
+        for agent in sorted(rows[date]):
+            b = rows[date][agent]
+            print(f"  {date:<10}{agent:<10}{b['tasks']:>5}{b['cost']:>10.2f}{fmt_tok(b['in_tok']):>10}{fmt_tok(b['cache_tok']):>10}{fmt_tok(b['out_tok']):>10}{b['turns']:>7}")
+            for k in total:
+                total[k] += b[k]
+            if date == today:
+                for k in today_total:
+                    today_total[k] += b[k]
+    print("  " + "-" * 74)
+    if today_total["tasks"]:
+        print(f"  {'今日合计':<18}{today_total['tasks']:>7}{today_total['cost']:>10.2f}")
+    print(f"  {'累计合计':<18}{total['tasks']:>7}{total['cost']:>10.2f}")
+if codex_tasks:
+    print(f"  (codex 任务 {codex_tasks} 次, 合计 ~{fmt_tok(codex_tokens)} tokens — codex CLI 不报美元 cost)")
+print()
+print("  注: cost 来自 claude stream-json result 事件的 total_cost_usd; API 订阅计划下为参考值")
+PY
+}
+
+# ---------- doctor: 一键诊断 (v3.6) ----------
+# 把 timeout SOP 决策树的"取证"部分脚本化: watcher 存活 / 心跳 / state 卡点 / log 活性
+# / 信号堆积 / provider 可执行性, 每个 agent 给一条建议动作.
+doctor() {
+  write_state
+  # bash 侧预收集 provider bin 可用性 (command -v 在 python 里跨平台不可靠)
+  local claude_ok="no" codex_ok="no" pwsh_ok="no"
+  command -v claude >/dev/null 2>&1 && claude_ok="yes"
+  command -v codex  >/dev/null 2>&1 && codex_ok="yes"
+  command -v pwsh   >/dev/null 2>&1 && pwsh_ok="yes"
+
+  "$PYTHON_BIN" - "$ROOT" "$STATE_DIR" "$RUNTIME_DIR" "$SIG_DIR" "$LOG_DIR" "$CONFIG_JSON" "$claude_ok" "$codex_ok" "$pwsh_ok" <<'PY'
+import json, os, sys, glob, datetime
+
+root, state_dir, runtime_dir, sig_dir, log_dir, config_json, claude_ok, codex_ok, pwsh_ok = sys.argv[1:10]
+now = datetime.datetime.now().astimezone()
+problems = []
+
+def age_str(dt):
+    s = (now - dt).total_seconds()
+    if s < 60: return f"{int(s)}s 前"
+    if s < 3600: return f"{int(s//60)}m 前"
+    if s < 86400: return f"{s/3600:.1f}h 前"
+    return f"{s/86400:.1f}d 前"
+
+def proc_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except (OSError, ValueError):
+        pass
+    try:
+        import subprocess
+        return subprocess.run(["kill", "-0", str(pid)], capture_output=True, timeout=2).returncode == 0
+    except Exception:
+        return False
+
+# 读 state / workers / config
+state = {}
+try:
+    state = json.load(open(os.path.join(state_dir, "current.json"), encoding="utf-8"))
+except Exception:
+    problems.append("state/current.json 不存在或损坏 — 跑一次 agentctl status 重建")
+
+workers = {}
+try:
+    workers = json.load(open(os.path.join(runtime_dir, "workers.json"), encoding="utf-8"))
+except Exception:
+    pass
+
+config = {}
+try:
+    config = json.load(open(config_json, encoding="utf-8"))
+except Exception:
+    problems.append("config.json 不存在或损坏")
+
+print("=" * 70)
+print(f"  agentctl doctor · {os.path.basename(root)} · {now.strftime('%Y-%m-%d %H:%M:%S')}")
+print("=" * 70)
+
+# --- 1) 信号堆积 ---
+sigs = [os.path.basename(p) for p in glob.glob(os.path.join(sig_dir, "*")) if not os.path.basename(p).startswith(".")]
+if sigs:
+    print(f"\n  📬 待处理信号: {', '.join(sorted(sigs))}")
+
+# --- 2) per-agent 诊断 ---
+ABBR = {"backend": "be", "frontend": "fe"}
+for agent in ("backend", "frontend"):
+    ag = state.get(agent) or {}
+    st = ag.get("state", "unknown")
+    provider = ag.get("provider", "?")
+    print(f"\n  ── {agent} (provider={provider}) " + "─" * (40 - len(agent)))
+
+    # watcher
+    w = (workers.get(agent) or {})
+    wpid = w.get("pid")
+    watcher_alive = bool(wpid and proc_alive(wpid))
+    print(f"  watcher : {'✅ 活 (pid=' + str(wpid) + ')' if watcher_alive else '❌ 死'}")
+
+    # 心跳
+    hb_fresh = None
+    try:
+        hb = json.load(open(os.path.join(runtime_dir, "heartbeats", f"{agent}.json"), encoding="utf-8"))
+        hb_time = datetime.datetime.fromisoformat(hb.get("updated_at"))
+        hb_fresh = (now - hb_time).total_seconds() < 60
+        print(f"  心跳    : {'✅' if hb_fresh else '⚠️ 陈旧'} ({age_str(hb_time)})")
+    except Exception:
+        print("  心跳    : (无记录)")
+
+    # running lock
+    lock = os.path.join(runtime_dir, f"{agent}.running.lock")
+    lock_alive = False
+    if os.path.exists(lock):
+        try:
+            lpid = open(lock).read().strip()
+            lock_alive = proc_alive(lpid)
+            print(f"  runner  : {'🏃 任务进行中 (pid=' + lpid + ')' if lock_alive else '⚠️ 残留 lock (进程已死)'}")
+        except Exception:
+            pass
+
+    # log 活性
+    log_active = None
+    today = now.strftime("%Y%m%d")
+    log_path = os.path.join(log_dir, f"{ABBR[agent]}_{today}.log")
+    if os.path.exists(log_path):
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(log_path)).astimezone()
+        log_active = (now - mtime).total_seconds() < 300
+        print(f"  日志    : 最后写入 {age_str(mtime)}")
+
+    print(f"  state   : {st}")
+
+    # --- 建议 (timeout SOP 决策树脚本化) ---
+    advice = None
+    if st == "running" or lock_alive:
+        if log_active is False:
+            advice = f"⚠️ 在跑但日志 5min+ 没动 — 可能 hang. 看: agentctl logs {agent}; 仍无输出则 dispatch 重派"
+        else:
+            advice = "正常执行中, 等完成通知即可"
+    elif st == "done-awaiting-review":
+        advice = "回到 Claude Code 让主 Claude 审查 (Stop hook 下条消息自动注入)"
+    elif st == "ready-for-human":
+        advice = "🎯 等你拍板: 收下 / 打回"
+    elif st == "timeout":
+        wd = (config.get("agents", {}).get(agent) or {}).get("dir", "")
+        advice = f"跑 timeout SOP: cd {wd} && git status — 有改动则代 commit + 审查; 干净且 log 报错则 /retry-other-provider {agent}"
+    elif st == "failed":
+        advice = f"看 events 末尾: tail -5 .aiagents/state/events.jsonl — provider 异常(限流/sandbox)则 /retry-other-provider {agent}; spec/代码问题则走 04 修复"
+    elif st in ("queued", "queued-bugfix"):
+        if not watcher_alive:
+            advice = "❌ 有排队任务但 watcher 死了 — 先 agentctl up"
+        else:
+            advice = "已排队, watcher 即将拾取"
+    elif not watcher_alive and st == "idle":
+        advice = "空闲且 watcher 未起 — 要派任务先 agentctl up"
+    if advice:
+        print(f"  💡 建议 : {advice}")
+        if advice.startswith(("❌", "⚠️")):
+            problems.append(f"{agent}: {advice}")
+
+# --- 3) 环境 ---
+print("\n  ── 环境 " + "─" * 44)
+print(f"  claude CLI : {'✅' if claude_ok == 'yes' else '❌ 未安装'}    codex CLI : {'✅' if codex_ok == 'yes' else '❌ 未安装'}    pwsh(toast) : {'✅' if pwsh_ok == 'yes' else '— 无桌面通知'}")
+push = ((config.get("notify") or {}).get("push") or {})
+push_provider = push.get("provider") or ""
+print(f"  移动端推送 : {'✅ ' + push_provider if push_provider else '— 未配置 (config.json notify.push.provider)'}")
+
+# --- 4) 总结 ---
+print("\n" + "=" * 70)
+if problems:
+    print(f"  ⚠️ 发现 {len(problems)} 个需要注意的点 (见上方 💡)")
+else:
+    print("  ✅ 一切正常")
+PY
+}
+
 # ---------- 子命令分派 ----------
 case "$COMMAND" in
   up|start) watchers_up ;;
@@ -856,11 +1114,13 @@ case "$COMMAND" in
   wait) wait_agent "$TARGET" "$WAIT_SECONDS" ;;
   watch) bash "$BIN_DIR/watch-agent.sh" "$TARGET" ;;
   memory) add_memory "$TARGET" ;;
+  cost) cost_report ;;
+  doctor) doctor ;;
   release-without-verify)
     release_without_verify "${2:-}" "${3:-}"
     ;;
   retry-other-provider)
     retry_other_provider "${2:-}"
     ;;
-  *) echo "用法: agentctl.sh {up|down|restart|status|logs|dispatch|wait|watch|memory|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
+  *) echo "用法: agentctl.sh {up|down|restart|status|logs|dispatch|wait|watch|memory|cost|doctor|release-without-verify|retry-other-provider} [args]" >&2; exit 2 ;;
 esac

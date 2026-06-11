@@ -222,6 +222,41 @@ bash .aiagents/bin/agentctl.sh logs backend worker   # Follow watcher itself (ch
 bash .aiagents/bin/agentctl.sh logs backend raw      # Raw JSON Lines (debug)
 ```
 
+### Cost + diagnostics (v3.6)
+
+```bash
+bash .aiagents/bin/agentctl.sh cost      # Token cost summary: cost($)/tokens/turns by date × agent + today/cumulative totals
+bash .aiagents/bin/agentctl.sh doctor    # One-shot diagnosis: watcher alive / heartbeat / state / log activity / pending signals + per-agent advice
+```
+
+`cost` aggregates `total_cost_usd` from claude tasks' `.log.raw` files (codex tasks expose token counts only, no dollar value). `doctor` scripts the evidence-gathering part of the timeout SOP — when a task seems stuck, run it first and follow the 💡 advice.
+
+### Mobile push notification (v3.6 — get pinged even away from your desk)
+
+Edit `notify.push` in `.aiagents/config.json`; done / failed / timeout events push to your phone:
+
+```json
+{
+  "notify": {
+    "push": {
+      "provider": "ntfy",
+      "key": "",
+      "url": "https://ntfy.sh/my-secret-topic",
+      "events": ["done", "failed", "timeout", "stale"]
+    }
+  }
+}
+```
+
+| provider | Channel | What to fill |
+|---|---|---|
+| `serverchan` | WeChat (Server酱, [sct.ftqq.com](https://sct.ftqq.com)) | `key` = SendKey |
+| `pushplus` | WeChat (PushPlus) | `key` = token |
+| `bark` | iOS native push | `key` = device key; `url` for self-hosted server |
+| `ntfy` | Android / self-hosted | `url` = full topic URL (e.g. `https://ntfy.sh/my-topic`) |
+
+Empty `provider` = off (default). Push failures are silent and never block the main flow; desktop toast keeps working. Manual test: `bash .aiagents/bin/notify-push.sh backend done "test" myproject`.
+
 ### Slash commands inside Claude Code
 
 | Command | Purpose |

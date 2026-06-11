@@ -218,6 +218,41 @@ bash .aiagents/bin/agentctl.sh logs backend worker   # follow watcher 自身(验
 bash .aiagents/bin/agentctl.sh logs backend raw      # 原始 JSON Lines(debug)
 ```
 
+### 成本 + 诊断(v3.6)
+
+```bash
+bash .aiagents/bin/agentctl.sh cost      # token 成本汇总: 按日期 × agent 列 cost($)/tokens/turns + 今日/累计合计
+bash .aiagents/bin/agentctl.sh doctor    # 一键诊断: watcher 存活/心跳/state 卡点/log 活性/信号堆积 + 每个 agent 给建议动作
+```
+
+`cost` 聚合 claude 任务 `.log.raw` 里的 `total_cost_usd`(codex 任务只有 token 计数,无美元值)。`doctor` 把 timeout SOP 决策树的取证部分脚本化 — 任务卡住先跑它,按 💡 建议行动。
+
+### 移动端推送(v3.6,人不在电脑前也能收到通知)
+
+编辑 `.aiagents/config.json` 的 `notify.push`,任务 done / failed / timeout 时推手机:
+
+```json
+{
+  "notify": {
+    "push": {
+      "provider": "serverchan",
+      "key": "SCT你的SendKey",
+      "url": "",
+      "events": ["done", "failed", "timeout", "stale"]
+    }
+  }
+}
+```
+
+| provider | 渠道 | 填什么 |
+|---|---|---|
+| `serverchan` | 微信(Server酱,[sct.ftqq.com](https://sct.ftqq.com)) | `key` = SendKey |
+| `pushplus` | 微信(PushPlus) | `key` = token |
+| `bark` | iOS 原生推送 | `key` = device key;自建服务器填 `url` |
+| `ntfy` | 安卓 / 自建 | `url` = topic 完整地址(如 `https://ntfy.sh/my-topic`) |
+
+`provider` 留空 = 关闭(默认)。推送失败静默,不影响主流程;桌面 toast 照常工作。手动测试:`bash .aiagents/bin/notify-push.sh backend done "测试" myproject`。
+
 ### Claude Code 内 slash commands
 
 | 命令 | 作用 |

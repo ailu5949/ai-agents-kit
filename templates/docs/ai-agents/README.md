@@ -112,7 +112,26 @@ Claude 审查编码 agent 产出时**必须**走完 6 项(详见项目根 `CLAUD
 
 任何一项失败 → 整体失败 → 生成 04 修复单。
 
+## 成本 + 诊断(v3.6)
+
+```bash
+bash .aiagents/bin/agentctl.sh cost      # token 成本汇总(claude 任务的 total_cost_usd 聚合)
+bash .aiagents/bin/agentctl.sh doctor    # 一键诊断: watcher/心跳/state 卡点/log 活性 + 建议动作
+```
+
+## 移动端推送(v3.6)
+
+编辑 `.aiagents/config.json` `notify.push`(provider 留空 = 关):
+
+- `serverchan`(微信 Server酱,`key`=SendKey)/ `pushplus`(微信,`key`=token)
+- `bark`(iOS,`key`=device key)/ `ntfy`(安卓/自建,`url`=topic 地址)
+
+任务 done/failed/timeout/stale 自动推手机;失败静默不影响主流程。
+手测:`bash .aiagents/bin/notify-push.sh backend done "测试" myproject`
+
 ## 排错
+
+**第一步永远是 `bash .aiagents/bin/agentctl.sh doctor`** — 它会列出 watcher 存活 / 心跳 / state 卡点 / 日志活性,并给每个 agent 一条建议动作。下表是 doctor 覆盖不到的场景:
 
 | 现象 | 排查 |
 |------|------|
