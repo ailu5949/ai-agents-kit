@@ -24,7 +24,9 @@ param(
   [switch]$Yes,
   [switch]$MigrateV1,
   [switch]$WithDesignDoc,
-  [switch]$WithTestCases
+  [switch]$WithTestCases,
+  [switch]$WithAdversarialReview,
+  [string]$Reviewer = "codex"
 )
 
 $ErrorActionPreference = "Stop"
@@ -263,6 +265,11 @@ Write-Host ""
 Write-Host "📐 可选阶段产物 (复杂项目推荐启用, 简单项目可跳过):"
 $script:WithDesignDocBool = Ask-Bool "  启用「设计文档」阶段 (产 01.5-设计.md: 架构 / 数据模型 / 接口契约)" ([bool]$WithDesignDoc)
 $script:WithTestCasesBool = Ask-Bool "  启用「测试用例」阶段 (产 01.6-测试用例.md: Given/When/Then 用例表)" ([bool]$WithTestCases)
+$script:WithAdversarialBool = Ask-Bool "  启用「对抗性审查」(真打验证后用异构 provider 独立找茬, 防同体盲区)" ([bool]$WithAdversarialReview)
+$script:AdversarialProvider = $Reviewer
+if ($script:WithAdversarialBool) {
+  $script:AdversarialProvider = Ask "    对抗审查 reviewer provider (编码用 claude 建议 codex, 反之亦然)" $Reviewer "codex"
+}
 
 # ---------- 1. 创建目录骨架 ----------
 Write-Host ""
@@ -377,10 +384,21 @@ if (Test-Path $cfgJsonPath) {
     if (-not $existingCfg.workflow.test_cases) {
       $existingCfg.workflow | Add-Member -NotePropertyName test_cases -NotePropertyValue ([ordered]@{ enabled = $false; spec_file = "docs/ai-agents/specs/01.6-测试用例.md" }) -Force
     }
+    if (-not $existingCfg.workflow.adversarial_review) {
+      $existingCfg.workflow | Add-Member -NotePropertyName adversarial_review -NotePropertyValue ([ordered]@{ enabled = $false; provider = $script:AdversarialProvider; timeout = 900 }) -Force
+    }
     if ($script:WithDesignDocBool) { $existingCfg.workflow.design_doc.enabled = $true }
     if ($script:WithTestCasesBool) { $existingCfg.workflow.test_cases.enabled = $true }
+    if ($script:WithAdversarialBool) {
+      $existingCfg.workflow.adversarial_review.enabled = $true
+      $existingCfg.workflow.adversarial_review.provider = $script:AdversarialProvider
+    }
+    # v3.6: notify.push 块
+    if (-not $existingCfg.notify) {
+      $existingCfg | Add-Member -NotePropertyName notify -NotePropertyValue ([ordered]@{ push = [ordered]@{ provider = ""; key = ""; url = ""; events = @("done","failed","timeout","stale") } }) -Force
+    }
     Write-Utf8File $cfgJsonPath ($existingCfg | ConvertTo-Json -Depth 10)
-    Write-Host ("  workflow updated (design_doc.enabled={0}, test_cases.enabled={1})" -f $existingCfg.workflow.design_doc.enabled, $existingCfg.workflow.test_cases.enabled)
+    Write-Host ("  workflow updated (design_doc={0}, test_cases={1}, adversarial_review={2})" -f $existingCfg.workflow.design_doc.enabled, $existingCfg.workflow.test_cases.enabled, $existingCfg.workflow.adversarial_review.enabled)
   }
 } else {
   Write-Host "🧩 生成 .aiagents/config.json..."
@@ -396,6 +414,10 @@ if (Test-Path $cfgJsonPath) {
       human_override_after_retry = 3
       design_doc = [ordered]@{ enabled = $script:WithDesignDocBool; spec_file = "docs/ai-agents/specs/01.5-设计.md" }
       test_cases = [ordered]@{ enabled = $script:WithTestCasesBool; spec_file = "docs/ai-agents/specs/01.6-测试用例.md" }
+      adversarial_review = [ordered]@{ enabled = $script:WithAdversarialBool; provider = $script:AdversarialProvider; timeout = 900 }
+    }
+    notify    = [ordered]@{
+      push = [ordered]@{ provider = ""; key = ""; url = ""; events = @("done","failed","timeout","stale") }
     }
     paths     = [ordered]@{
       specs = "docs/ai-agents/specs"
@@ -659,4 +681,9 @@ if ($script:WithTestCasesBool) {
   Write-Host "    ✅ 测试用例     → 主 Claude 会产 docs/ai-agents/specs/01.6-测试用例.md"
 } else {
   Write-Host "    ⬜ 测试用例     (关) — 改 .aiagents/config.json workflow.test_cases.enabled=true 或重跑 install -WithTestCases"
+}
+if ($script:WithAdversarialBool) {
+  Write-Host "    ✅ 对抗审查     → reviewer=$($script:AdversarialProvider), 真打验证后 /adversarial-review 独立找茬"
+} else {
+  Write-Host "    ⬜ 对抗审查     (关) — 改 .aiagents/config.json workflow.adversarial_review.enabled=true 或重跑 install -WithAdversarialReview"
 }

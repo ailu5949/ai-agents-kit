@@ -43,6 +43,8 @@ MIGRATE_V1=0
 STACK_PRESET=""
 WITH_DESIGN_DOC=0
 WITH_TEST_CASES=0
+WITH_ADVERSARIAL=0
+ADVERSARIAL_PROVIDER="codex"
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) AUTO_YES=1 ;;
@@ -51,9 +53,12 @@ while [ $# -gt 0 ]; do
     --stack=*) STACK_PRESET="${1#--stack=}" ;;
     --with-design-doc) WITH_DESIGN_DOC=1 ;;
     --with-test-cases) WITH_TEST_CASES=1 ;;
+    --with-adversarial-review) WITH_ADVERSARIAL=1 ;;
+    --reviewer) shift; ADVERSARIAL_PROVIDER="${1:-codex}" ;;
+    --reviewer=*) ADVERSARIAL_PROVIDER="${1#--reviewer=}" ;;
     --help|-h)
       cat <<'USAGE'
-用法: bash install.sh [--yes] [--stack <preset>] [--with-design-doc] [--with-test-cases] [--migrate-v1]
+用法: bash install.sh [--yes] [--stack <preset>] [--with-design-doc] [--with-test-cases] [--with-adversarial-review] [--migrate-v1]
 
 选项:
   --yes, -y          非交互, 用所有默认值 (空项目默认走 python-light 预设)
@@ -68,6 +73,9 @@ while [ $# -gt 0 ]; do
                      (架构 / 数据模型 / 接口契约 / 状态机 / 关键决策). 默认关闭.
   --with-test-cases  启用「测试用例」可选阶段: 主 Claude 产 01.6-测试用例.md
                      (用例 ID + Given/When/Then + 反向对齐验收点). 默认关闭.
+  --with-adversarial-review  启用「对抗性审查」: 真打验证后, 用异构 provider(默认 codex)
+                     独立找茬, 防主 Claude 同体审查盲区. 默认关闭.
+  --reviewer <name>  对抗审查的 reviewer provider (默认 codex; 编码用 codex 时建议改 claude).
   --migrate-v1       从 v1 旧目录结构迁移
   --help, -h         显示本帮助
 
@@ -76,7 +84,8 @@ while [ $# -gt 0 ]; do
   bash install.sh --yes                             # 非交互, python-light 默认, workflow 全关
   bash install.sh --yes --stack java-enterprise     # 非交互, 强制 Java
   bash install.sh --yes --with-design-doc           # 非交互, 启用设计文档
-  bash install.sh --yes --with-design-doc --with-test-cases   # 两个都开
+  bash install.sh --yes --with-adversarial-review   # 启用对抗审查 (reviewer=codex)
+  bash install.sh --yes --with-adversarial-review --reviewer claude   # reviewer 换 claude
 USAGE
       exit 0 ;;
     *) echo "未知参数: $1 (用 --help 看用法)"; exit 2 ;;
@@ -342,6 +351,10 @@ echo
 echo "📐 可选阶段产物 (复杂项目推荐启用, 简单项目可跳过):"
 ask_bool WITH_DESIGN_DOC  "  启用「设计文档」阶段 (产 01.5-设计.md: 架构 / 数据模型 / 接口契约)" "$WITH_DESIGN_DOC"
 ask_bool WITH_TEST_CASES  "  启用「测试用例」阶段 (产 01.6-测试用例.md: Given/When/Then 用例表)" "$WITH_TEST_CASES"
+ask_bool WITH_ADVERSARIAL "  启用「对抗性审查」(真打验证后用异构 provider 独立找茬, 防同体盲区)" "$WITH_ADVERSARIAL"
+if [ "$WITH_ADVERSARIAL" = 1 ]; then
+  ask ADVERSARIAL_PROVIDER "    对抗审查 reviewer provider (编码用 claude 建议 codex, 反之亦然)" "$ADVERSARIAL_PROVIDER"
+fi
 
 CODEX_BIN_DEFAULT="${CODEX_BIN:-codex}"
 # Codex 默认 args: --full-auto 会触 Windows sandbox 卡死(PowerShell command 失败,memory bugs.md
@@ -483,11 +496,14 @@ write_v3_config() {
       "$BACKEND_TEST_CMD" "$FRONTEND_TEST_CMD" \
       "$BACKEND_LINT_CMD" "$FRONTEND_LINT_CMD" \
       "$CODEX_BIN_DEFAULT" "$CODEX_ARGS_DEFAULT" "$CODEX_TIMEOUT_DEFAULT" \
-      "$WITH_DESIGN_DOC" "$WITH_TEST_CASES" <<'PY'
+      "$WITH_DESIGN_DOC" "$WITH_TEST_CASES" "$WITH_ADVERSARIAL" "$ADVERSARIAL_PROVIDER" <<'PY'
 import json, os, sys
-path, bd, fd, bs, fs, btc, ftc, blc, flc, cb, ca, cto, wdd, wtc = sys.argv[1:15]
+path, bd, fd, bs, fs, btc, ftc, blc, flc, cb, ca, cto, wdd, wtc, wadv, adv_provider = sys.argv[1:17]
 with_design = wdd == "1"
 with_tests  = wtc == "1"
+with_adv    = wadv == "1"
+if not adv_provider:
+    adv_provider = "codex"
 
 # Detect existing config
 existing = None
@@ -513,6 +529,14 @@ if existing and existing.get("providers"):
     if with_tests and not wf["test_cases"]["enabled"]:
         wf["test_cases"]["enabled"] = True
         needs_save = True
+    # v3.7: adversarial_review 块 (对抗审查, 默认关)
+    if "adversarial_review" not in wf:
+        wf["adversarial_review"] = {"enabled": False, "provider": adv_provider, "timeout": 900}
+        needs_save = True
+    if with_adv and not wf["adversarial_review"]["enabled"]:
+        wf["adversarial_review"]["enabled"] = True
+        wf["adversarial_review"]["provider"] = adv_provider
+        needs_save = True
     # v3.6: notify.push 块 (移动端推送, 默认关 — provider 留空)
     nt = existing.setdefault("notify", {})
     if "push" not in nt:
@@ -522,7 +546,7 @@ if existing and existing.get("providers"):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(existing, f, ensure_ascii=False, indent=2)
             f.write("\n")
-        print(f"[install] v3 config preserved; workflow/notify updated (design_doc.enabled={wf['design_doc']['enabled']}, test_cases.enabled={wf['test_cases']['enabled']})", file=sys.stderr)
+        print(f"[install] v3 config preserved; workflow/notify updated (design_doc={wf['design_doc']['enabled']}, test_cases={wf['test_cases']['enabled']}, adversarial_review={wf['adversarial_review']['enabled']})", file=sys.stderr)
     else:
         print("[install] config.json is already v3 -- skipping rewrite", file=sys.stderr)
     sys.exit(0)
@@ -600,6 +624,12 @@ if with_design:
 if with_tests:
     wf["test_cases"]["enabled"] = True
 
+# v3.7: adversarial_review 块 (对抗审查, 默认关 — reviewer 默认 codex)
+wf.setdefault("adversarial_review", {"enabled": False, "provider": adv_provider, "timeout": 900})
+if with_adv:
+    wf["adversarial_review"]["enabled"] = True
+    wf["adversarial_review"]["provider"] = adv_provider
+
 # v3.6: notify.push 块 (移动端推送, 默认关 — Lane 填 provider/key 后启用)
 new_cfg.setdefault("notify", {}).setdefault(
     "push", {"provider": "", "key": "", "url": "", "events": ["done", "failed", "timeout", "stale"]})
@@ -635,18 +665,21 @@ elif command -v jq >/dev/null 2>&1; then
   if [ -f "$CFG_JSON" ]; then
     echo "  ⚠️  config.json 已存在 + 当前是 jq fallback (无 python), 跳过 rewrite. 改 workflow 请手编辑."
   else
-    _design_enabled=false; _tests_enabled=false
+    _design_enabled=false; _tests_enabled=false; _adv_enabled=false
     [ "$WITH_DESIGN_DOC" = 1 ] && _design_enabled=true
     [ "$WITH_TEST_CASES" = 1 ] && _tests_enabled=true
+    [ "$WITH_ADVERSARIAL" = 1 ] && _adv_enabled=true
     jq -n \
       --arg bd  "$BACKEND_DIR"          --arg fd  "$FRONTEND_DIR" \
       --arg bs  "$BACKEND_STACK"        --arg fs  "$FRONTEND_STACK" \
       --arg btc "$BACKEND_TEST_CMD"     --arg ftc "$FRONTEND_TEST_CMD" \
       --arg blc "$BACKEND_LINT_CMD"     --arg flc "$FRONTEND_LINT_CMD" \
       --arg cb  "$CODEX_BIN_DEFAULT"    --arg ca  "$CODEX_ARGS_DEFAULT" \
+      --arg advp "$ADVERSARIAL_PROVIDER" \
       --argjson cto "$CODEX_TIMEOUT_DEFAULT" \
       --argjson design "$_design_enabled" \
       --argjson tests  "$_tests_enabled" \
+      --argjson adv    "$_adv_enabled" \
       '{
          version: "3.0.0",
          namespace: "ai-agents-kit",
@@ -664,7 +697,8 @@ elif command -v jq >/dev/null 2>&1; then
            require_review_before_frontend: true,
            human_override_after_retry: 3,
            design_doc: {enabled: $design, spec_file: "docs/ai-agents/specs/01.5-设计.md"},
-           test_cases: {enabled: $tests,  spec_file: "docs/ai-agents/specs/01.6-测试用例.md"}
+           test_cases: {enabled: $tests,  spec_file: "docs/ai-agents/specs/01.6-测试用例.md"},
+           adversarial_review: {enabled: $adv, provider: $advp, timeout: 900}
          },
          notify: {
            push: {provider: "", key: "", url: "", events: ["done","failed","timeout","stale"]}
@@ -999,6 +1033,8 @@ if [ "$WITH_DESIGN_DOC" = 1 ]; then echo "    ✅ 设计文档     → 主 Claud
                               else echo "    ⬜ 设计文档     (关) — 改 .aiagents/config.json workflow.design_doc.enabled=true 或重跑 install --with-design-doc"; fi
 if [ "$WITH_TEST_CASES" = 1 ]; then echo "    ✅ 测试用例     → 主 Claude 会产 docs/ai-agents/specs/01.6-测试用例.md"
                               else echo "    ⬜ 测试用例     (关) — 改 .aiagents/config.json workflow.test_cases.enabled=true 或重跑 install --with-test-cases"; fi
+if [ "$WITH_ADVERSARIAL" = 1 ]; then echo "    ✅ 对抗审查     → reviewer=$ADVERSARIAL_PROVIDER, 真打验证后 /adversarial-review 独立找茬"
+                              else echo "    ⬜ 对抗审查     (关) — 改 .aiagents/config.json workflow.adversarial_review.enabled=true 或重跑 install --with-adversarial-review"; fi
 echo
 
 # ---------- v3.1 桌面通知提示 ----------

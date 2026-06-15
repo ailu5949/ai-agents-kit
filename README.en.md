@@ -166,23 +166,28 @@ bash install.sh --yes --stack python-light       # Small project / personal firs
 bash install.sh --yes --stack java-enterprise    # Heavy enterprise
 ```
 
-### Optional stage outputs (`--with-design-doc` / `--with-test-cases`)
+### Optional switches (all off by default, enable as needed)
 
-Main Claude by default produces only `01-requirements.md` + `02/03-coding.md`. Complex projects (multi-module / multi-state-machine / cross-service) can enable two optional stages:
+Main Claude by default produces only `01-requirements.md` + `02/03-coding.md` + self-review. Complex projects can enable three optional items:
 
-| Flag | Output | Content |
+| Flag | Purpose | Output / behavior |
 |---|---|---|
-| `--with-design-doc` | `specs/01.5-design.md` | Architecture / data model / API contract / state machine / key decisions |
-| `--with-test-cases` | `specs/01.6-test-cases.md` | Test case table (TC-ID / Given/When/Then) + edge cases + reverse-mapping to acceptance criteria |
+| `--with-design-doc` | Design doc stage | `specs/01.5-design.md`: architecture / data model / API contract / state machine / key decisions |
+| `--with-test-cases` | Test cases stage | `specs/01.6-test-cases.md`: test case table (TC-ID / Given/When/Then) + edge cases + reverse-mapping to acceptance criteria |
+| `--with-adversarial-review` | **Adversarial review** | After real-verify, a **heterogeneous provider** (codex by default) independently hunts for problems — guards against main Claude's same-brain review blind spot |
 
 ```bash
-bash install.sh --yes --with-design-doc                       # Enable design doc
-bash install.sh --yes --with-design-doc --with-test-cases     # Enable both
+bash install.sh --yes --with-design-doc                          # Enable design doc
+bash install.sh --yes --with-design-doc --with-test-cases        # Design + test cases
+bash install.sh --yes --with-adversarial-review                  # Adversarial review (reviewer=codex)
+bash install.sh --yes --with-adversarial-review --reviewer claude  # reviewer = claude when coding with codex
 ```
 
-PowerShell: `pwsh install.ps1 -Yes -WithDesignDoc -WithTestCases`
+PowerShell: `pwsh install.ps1 -Yes -WithDesignDoc -WithTestCases -WithAdversarialReview -Reviewer codex`
 
-Once enabled, main Claude auto-produces 01 → 01.5 → 01.6 → 02/03 in order during decomposition. You can flip these flags anytime by editing `.aiagents/config.json` `workflow.{design_doc,test_cases}.enabled`, or rerun install with the flag (idempotent in-place update on installed projects, other config untouched).
+**Adversarial review** is the kit's unique edge over Claude-native subagents — native subagents are all Claude, so they can't do heterogeneous adversarial review. It solves the "same-brain blind spot": main Claude both writes the 02/03 spec and reviews it, so a misread spec gets passed by the same misread standard. Introducing codex as "another brain" to independently read the git diff + spec and find problems. See the "Adversarial review" section below.
+
+Once enabled, main Claude auto-produces 01 → 01.5 → 01.6 → 02/03 in order during decomposition. You can flip these flags anytime by editing `.aiagents/config.json` `workflow.{design_doc,test_cases,adversarial_review}.enabled`, or rerun install with the flag (idempotent in-place update on installed projects, other config untouched).
 
 ---
 
@@ -257,6 +262,30 @@ Edit `notify.push` in `.aiagents/config.json`; done / failed / timeout events pu
 
 Empty `provider` = off (default). Push failures are silent and never block the main flow; desktop toast keeps working. Manual test: `bash .aiagents/bin/notify-push.sh backend done "test" myproject`.
 
+### Adversarial review (v3.7 — heterogeneous provider hunts for problems)
+
+Main Claude both writes the 02/03 spec and reviews it — a misread spec gets passed by the same misread standard (**same-brain blind spot**). Adversarial review, after real-verify, brings in a **provider heterogeneous to the coding agent** (codex by default) to independently hunt for problems.
+
+```bash
+bash install.sh --yes --with-adversarial-review                  # Enable (reviewer=codex)
+# Or edit .aiagents/config.json:
+#   "workflow": {"adversarial_review": {"enabled": true, "provider": "codex", "timeout": 900}}
+```
+
+Four-stage review chain:
+
+```
+coding agent done → Karpathy 6 points (main Claude self-review) → real-verify (pytest/lint/curl)
+   → [adversarial review] codex independently reads git diff + spec, default-reject → VERDICT: PASS|FAIL
+   → ready-for-human (Lane decides)
+```
+
+- **Heterogeneity**: coding with claude/opus → reviewer codex (another brain); script warns if reviewer == coding provider
+- **Independent evidence**: codex runs its own git diff (`runtime/<agent>.review-base..HEAD`) + grep, doesn't trust the coding agent's self-report
+- **Main Claude is the arbiter**: PASS → ready-for-human; FAIL → verify each issue (codex can misjudge too) → fold into 04-fix → dispatch back
+- Report lands at `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`
+- Off by default. Run manually: main Claude `/adversarial-review backend`, or `bash .aiagents/bin/adversarial-review.sh backend`
+
 ### Slash commands inside Claude Code
 
 | Command | Purpose |
@@ -266,6 +295,7 @@ Empty `provider` = off (default). Push failures are silent and never block the m
 | `/bugfix-backend` / `/bugfix-frontend` | Dispatch fix (uses 04-fix.md) |
 | `/status` | Check agent status |
 | `/review` | Manually trigger review (fallback; normally auto-injected by Stop hook) |
+| `/adversarial-review <agent>` | Adversarial review: heterogeneous provider hunts for problems (needs `workflow.adversarial_review.enabled`) |
 | `/memory "<note>"` | Write a memory item to `memory/global/patterns.md` or `bugs.md` |
 | `/retrospective` | Full-cycle retrospective, writeback to memory |
 | `/handover` | Generate state snapshot before switching session / model |

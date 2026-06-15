@@ -112,6 +112,21 @@ Claude 审查编码 agent 产出时**必须**走完 6 项(详见项目根 `CLAUD
 
 任何一项失败 → 整体失败 → 生成 04 修复单。
 
+## 对抗性审查(可选,v3.7)
+
+`workflow.adversarial_review.enabled == true` 时,真打验证(Pre-Human Gate)全过后多一道:用**异构 provider**(默认 codex)独立"找茬",防主 Claude 同体审查盲区(既写 02/03 又审,理解偏了会按同样偏的判 pass)。
+
+```bash
+# 主 Claude 跑(真打验证通过后):
+/adversarial-review backend
+# 背后: bash .aiagents/bin/adversarial-review.sh backend
+```
+
+- reviewer 独立读 spec + 本轮 git diff,默认有罪,落报告 `reviews/adversarial-<agent>-<ts>.md`,末行 `VERDICT: PASS|FAIL`
+- 主 Claude 是仲裁者:PASS → ready-for-human;FAIL → 逐条核实 → 04 修复 → 派回
+- 开启:`install.sh --with-adversarial-review` 或改 `config.json workflow.adversarial_review.enabled`
+- 异构性:编码用 claude → reviewer 用 codex(反之亦然),相同会警告
+
 ## 成本 + 诊断(v3.6)
 
 ```bash

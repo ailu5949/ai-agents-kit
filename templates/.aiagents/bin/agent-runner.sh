@@ -415,6 +415,12 @@ COMMIT_BEFORE="$(cd "$WORK_ABS" && git rev-parse HEAD 2>/dev/null || echo NONE)"
 GIT_STATUS_BEFORE_FILE="$(mktemp)"
 (cd "$WORK_ABS" && git status --porcelain 2>/dev/null || true) > "$GIT_STATUS_BEFORE_FILE"
 
+# v3.7: 落 review baseline — 对抗审查 (adversarial-review.sh) 用它算 <base>..HEAD diff 范围。
+# 任务开始前的 HEAD = 本轮交付的起点; 审查只看本轮 agent 改了什么。
+if [ "$COMMIT_BEFORE" != "NONE" ]; then
+  echo "$COMMIT_BEFORE" > "$RUNTIME_DIR/${AGENT}.review-base" 2>/dev/null || true
+fi
+
 # Build prompt file (preamble + handover[if any] + spec) for stdin delivery
 PROMPT_FILE="$(mktemp)"
 PREAMBLE="$ROOT/.aiagents/prompts/dispatch-preamble.md"
