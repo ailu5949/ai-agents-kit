@@ -209,20 +209,25 @@ Once enabled, main Claude auto-produces 01 → 01.5 → 01.6 → 02/03 in order 
 ### Start / stop watcher
 
 ```bash
-bash .aiagents/bin/agentctl.sh up        # One-shot start backend + frontend (true background, survives window close)
-bash .aiagents/bin/agentctl.sh down      # Stop
+bash .aiagents/bin/agentctl.sh up           # One-shot start backend + frontend (true background, survives window close)
+bash .aiagents/bin/agentctl.sh up logs      # Start watchers, then immediately follow both agents' logs (one command, not two)
+bash .aiagents/bin/agentctl.sh up logs all  # Start + follow coding logs + adversarial-review logs in one window
+bash .aiagents/bin/agentctl.sh down         # Stop
 bash .aiagents/bin/agentctl.sh restart
-bash .aiagents/bin/agentctl.sh status    # See agents + provider + worker pids
+bash .aiagents/bin/agentctl.sh status       # See agents + provider + worker pids
 ```
 
-PowerShell equivalent: `pwsh .aiagents/bin/agentctl.ps1 up|down|restart|status`
+`up logs` starts watchers then drops into `logs both`; Ctrl+C only stops the follow, watchers keep running. PowerShell: `pwsh .aiagents/bin/agentctl.ps1 up|down|restart|status`, `pwsh ... up logs`.
 
 ### Monitor logs
 
 ```bash
 bash .aiagents/bin/agentctl.sh logs                  # List all log paths + tail-5 snapshot
 bash .aiagents/bin/agentctl.sh logs backend          # Follow backend (pretty stream by default)
-bash .aiagents/bin/agentctl.sh logs both             # Follow backend + frontend simultaneously
+bash .aiagents/bin/agentctl.sh logs both             # Follow backend + frontend coding streams
+bash .aiagents/bin/agentctl.sh logs all              # backend + frontend + both adversarial reviews in one window
+bash .aiagents/bin/agentctl.sh logs review           # Follow adversarial-review streams only (codex hunting)
+bash .aiagents/bin/agentctl.sh logs backend adversarial  # Follow backend adversarial review
 bash .aiagents/bin/agentctl.sh logs backend worker   # Follow watcher itself (check if watcher is alive)
 bash .aiagents/bin/agentctl.sh logs backend raw      # Raw JSON Lines (debug)
 ```
@@ -283,7 +288,9 @@ coding agent done → Karpathy 6 points (main Claude self-review) → real-verif
 - **Heterogeneity**: coding with claude/opus → reviewer codex (another brain); script warns if reviewer == coding provider
 - **Independent evidence**: codex runs its own git diff (`runtime/<agent>.review-base..HEAD`) + grep, doesn't trust the coding agent's self-report
 - **Main Claude is the arbiter**: PASS → ready-for-human; FAIL → verify each issue (codex can misjudge too) → fold into 04-fix → dispatch back
-- Report lands at `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`
+- **Not a persistent watched agent**: it's a one-shot codex launched by main Claude at the verify gate, outside the watcher/agent-runner pipeline
+- **Watch codex hunt live**: `agentctl.sh logs review` (or `logs all` for coding + review in one window); streams to the stable path `.aiagents/logs/adversarial-<agent>.log`
+- Permanent report lands at `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`
 - Off by default. Run manually: main Claude `/adversarial-review backend`, or `bash .aiagents/bin/adversarial-review.sh backend`
 
 ### Slash commands inside Claude Code

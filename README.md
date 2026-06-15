@@ -205,20 +205,25 @@ PowerShell:`pwsh install.ps1 -Yes -WithDesignDoc -WithTestCases -WithAdversarial
 ### 起停 watcher
 
 ```bash
-bash .aiagents/bin/agentctl.sh up        # 一键起 backend + frontend(真后台,关窗口不影响)
-bash .aiagents/bin/agentctl.sh down      # 停
+bash .aiagents/bin/agentctl.sh up           # 一键起 backend + frontend(真后台,关窗口不影响)
+bash .aiagents/bin/agentctl.sh up logs      # 起 watcher 后直接跟双 agent 日志(一条命令省两次输入)
+bash .aiagents/bin/agentctl.sh up logs all  # 起 watcher + 编码日志 + 对抗审查日志 一窗全跟
+bash .aiagents/bin/agentctl.sh down         # 停
 bash .aiagents/bin/agentctl.sh restart
-bash .aiagents/bin/agentctl.sh status    # 查看 agent + provider + worker pid
+bash .aiagents/bin/agentctl.sh status       # 查看 agent + provider + worker pid
 ```
 
-PowerShell 等价:`pwsh .aiagents/bin/agentctl.ps1 up|down|restart|status`
+`up logs` 起完 watcher 立即进入 `logs both`,Ctrl+C 只停跟随、watcher 仍后台。PowerShell 等价:`pwsh .aiagents/bin/agentctl.ps1 up|down|restart|status`,`pwsh ... up logs`。
 
 ### 监控日志
 
 ```bash
 bash .aiagents/bin/agentctl.sh logs                  # 列所有日志路径 + 末尾 5 行快照
 bash .aiagents/bin/agentctl.sh logs backend          # follow backend(默认 pretty 流)
-bash .aiagents/bin/agentctl.sh logs both             # 同时 follow backend + frontend
+bash .aiagents/bin/agentctl.sh logs both             # 同时 follow backend + frontend 编码流
+bash .aiagents/bin/agentctl.sh logs all              # backend + frontend + 两个对抗审查 一窗全跟
+bash .aiagents/bin/agentctl.sh logs review           # 只跟对抗审查实时流(codex 找茬过程)
+bash .aiagents/bin/agentctl.sh logs backend adversarial  # 跟 backend 对抗审查
 bash .aiagents/bin/agentctl.sh logs backend worker   # follow watcher 自身(验 watcher 是否还活)
 bash .aiagents/bin/agentctl.sh logs backend raw      # 原始 JSON Lines(debug)
 ```
@@ -279,7 +284,9 @@ bash install.sh --yes --with-adversarial-review                  # 开启 (revie
 - **异构原则**:编码用 claude/opus → reviewer 用 codex(换一个脑子);reviewer == 编码 provider 时脚本警告
 - **独立取证**:codex 自己跑 git diff(`runtime/<agent>.review-base..HEAD`)+ grep,不信编码 agent 自述
 - **主 Claude 是仲裁者**:PASS → 推 ready-for-human;FAIL → 逐条核实问题(codex 也会误判)→ 并入 04 修复 → 派回
-- 报告落 `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`
+- **不是常驻 watched agent**:它是主 Claude 在验证关卡**一次性**拉起的 codex,不走 watcher/agent-runner 流水线
+- **实时看 codex 找茬过程**:`agentctl.sh logs review`(或 `logs all` 跟编码 + 审查一窗),写到稳定路径 `.aiagents/logs/adversarial-<agent>.log`
+- 永久报告落 `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`
 - 默认关。手动跑:主 Claude `/adversarial-review backend`,或 `bash .aiagents/bin/adversarial-review.sh backend`
 
 ### Claude Code 内 slash commands

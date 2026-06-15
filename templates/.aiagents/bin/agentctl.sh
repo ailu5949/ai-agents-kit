@@ -679,6 +679,7 @@ _log_path_for() {
     pretty) echo "$LOG_DIR/${abbr}_${today}.log" ;;
     worker) echo "$LOG_DIR/worker-${agent}.log" ;;
     raw)    echo "$LOG_DIR/${abbr}_${today}.log.raw" ;;
+    adversarial|review) echo "$LOG_DIR/adversarial-${agent}.log" ;;  # v3.8: 对抗审查实时流 (稳定路径)
     *)      echo "" ;;
   esac
 }
@@ -691,15 +692,15 @@ logs_snapshot() {
     local abbr="be"; [ "$agent" = "frontend" ] && abbr="fe"
     echo ""
     echo "[$agent]"
-    for kind in pretty worker raw; do
+    for kind in pretty worker raw adversarial; do
       local p
       p="$(_log_path_for "$agent" "$kind")"
       if [ -f "$p" ]; then
         local size
         size="$(wc -c < "$p" 2>/dev/null | tr -d ' ')"
-        printf "  %-7s %s (%s bytes)\n" "$kind:" "$p" "$size"
+        printf "  %-11s %s (%s bytes)\n" "$kind:" "$p" "$size"
       else
-        printf "  %-7s %s (不存在)\n" "$kind:" "$p"
+        printf "  %-11s %s (不存在)\n" "$kind:" "$p"
       fi
     done
     # snapshot pretty 末尾 5 行
@@ -714,7 +715,10 @@ logs_snapshot() {
   echo "follow 用法:"
   echo "  bash $BIN_DIR/agentctl.sh logs backend           # 跟 backend pretty"
   echo "  bash $BIN_DIR/agentctl.sh logs frontend          # 跟 frontend pretty"
-  echo "  bash $BIN_DIR/agentctl.sh logs both              # 双 agent 同时跟"
+  echo "  bash $BIN_DIR/agentctl.sh logs both              # 双 agent 编码 pretty 同时跟"
+  echo "  bash $BIN_DIR/agentctl.sh logs all               # 双 agent 编码 + 对抗审查 一窗全跟"
+  echo "  bash $BIN_DIR/agentctl.sh logs review            # 只跟两个 agent 的对抗审查实时流"
+  echo "  bash $BIN_DIR/agentctl.sh logs backend adversarial  # 跟 backend 对抗审查"
   echo "  bash $BIN_DIR/agentctl.sh logs backend worker    # 跟 watcher 自身输出"
   echo "  bash $BIN_DIR/agentctl.sh logs backend raw       # 跟 claude 原始 JSON"
 }
@@ -732,18 +736,32 @@ _logs_filter() {
 
 logs_follow() {
   local agent="$1" kind="${2:-pretty}"
+  # both = backend + frontend 编码 pretty log;all = 再加两个对抗审查 log;review = 只跟对抗审查
   if [ "$agent" = "both" ] || [ "$agent" = "all" ]; then
+    local files=()
     local be fe
-    be="$(_log_path_for backend pretty)"
-    fe="$(_log_path_for frontend pretty)"
-    [ -f "$be" ] || touch "$be"
-    [ -f "$fe" ] || touch "$fe"
-    echo "tail -F $be $fe (Ctrl+C 退出, 默认过滤 JSON; LOGS_NOFILTER=1 看完整)"
-    tail -F "$be" "$fe" | _logs_filter
+    be="$(_log_path_for backend pretty)"; [ -f "$be" ] || touch "$be"; files+=("$be")
+    fe="$(_log_path_for frontend pretty)"; [ -f "$fe" ] || touch "$fe"; files+=("$fe")
+    if [ "$agent" = "all" ]; then
+      local abe afe
+      abe="$(_log_path_for backend adversarial)";  [ -f "$abe" ] || touch "$abe";  files+=("$abe")
+      afe="$(_log_path_for frontend adversarial)"; [ -f "$afe" ] || touch "$afe"; files+=("$afe")
+    fi
+    echo "tail -F ${files[*]} (Ctrl+C 退出, 默认过滤 JSON; LOGS_NOFILTER=1 看完整)"
+    tail -F "${files[@]}" | _logs_filter
+    return
+  fi
+  if [ "$agent" = "review" ] || [ "$agent" = "adversarial" ]; then
+    # 只跟两个 agent 的对抗审查实时流
+    local abe afe
+    abe="$(_log_path_for backend adversarial)";  [ -f "$abe" ] || touch "$abe"
+    afe="$(_log_path_for frontend adversarial)"; [ -f "$afe" ] || touch "$afe"
+    echo "tail -F $abe $afe (对抗审查实时流; Ctrl+C 退出)"
+    tail -F "$abe" "$afe"
     return
   fi
   if [ "$agent" != "backend" ] && [ "$agent" != "frontend" ]; then
-    echo "用法: agentctl.sh logs {backend|frontend|both} [pretty|worker|raw]" >&2
+    echo "用法: agentctl.sh logs {backend|frontend|both|all|review} [pretty|worker|raw|adversarial]" >&2
     exit 2
   fi
   local f
@@ -1047,7 +1065,21 @@ PY
 
 # ---------- 子命令分派 ----------
 case "$COMMAND" in
-  up|start) watchers_up ;;
+  up|start)
+    # v3.8: up 可带 logs 直接跟日志 — 省得另开窗口再敲 logs both
+    #   up                  → 仅起 watcher
+    #   up logs [target]    → 起 watcher 后立即 follow (默认 both); Ctrl+C 只停 follow, watcher 仍后台
+    #   等价别名: up -f / up --logs / up --follow
+    watchers_up
+    case "${2:-}" in
+      logs|-f|--logs|--follow)
+        echo ""
+        echo "── watcher 已后台启动, 下面开始跟日志 (Ctrl+C 仅停跟随, 不停 watcher) ──"
+        echo ""
+        logs_follow "${3:-both}" "${4:-pretty}"
+        ;;
+    esac
+    ;;
   down|stop) watchers_down ;;
   restart)
     watchers_down

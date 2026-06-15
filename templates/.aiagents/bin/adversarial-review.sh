@@ -227,13 +227,22 @@ EOF
 TS="$(date '+%Y%m%d-%H%M%S')"
 REPORT="$REVIEW_DIR/adversarial-${AGENT}-${TS}.md"
 RAW_LOG="$ROOT/.aiagents/logs/adversarial-${AGENT}-${TS}.log"
+# v3.8: 稳定路径 live log — 供 `agentctl logs review` / `logs all` 实时 tail -F (每轮覆盖)
+LIVE_LOG="$ROOT/.aiagents/logs/adversarial-${AGENT}.log"
 mkdir -p "$(dirname "$RAW_LOG")"
+{
+  echo "============================================================"
+  echo "🔍 对抗审查 · $AGENT · reviewer=$REVIEWER · $TS"
+  echo "   diff=$BASE..HEAD scope=$REL_DIR/"
+  echo "============================================================"
+} > "$LIVE_LOG"
 
 model_arg=""
 [ -n "$REVIEWER_MODEL" ] && model_arg="--model $REVIEWER_MODEL"
 
 echo "🔍 对抗审查启动: agent=$AGENT reviewer=$REVIEWER diff=$BASE..HEAD scope=$REL_DIR"
 echo "   报告将落: $REPORT"
+echo "   实时跟随: bash .aiagents/bin/agentctl.sh logs review  (或 logs $AGENT adversarial)"
 
 # reviewer 在 ROOT 运行(能读整个 repo + 跑 git diff)
 case "$REVIEWER" in
@@ -254,12 +263,13 @@ REVIEW_TIMEOUT="$(cfg "workflow.adversarial_review.timeout" "900")"
 [ -z "$REVIEW_TIMEOUT" ] && REVIEW_TIMEOUT="900"
 
 set +e
+# tee 同时落: 终端 + 时间戳 raw (历史) + 稳定 live log (供 logs review 实时跟随, append)
 if command -v timeout >/dev/null 2>&1; then
   # shellcheck disable=SC2002
-  cat "$PROMPT_FILE" | timeout "$REVIEW_TIMEOUT" bash -c "$REVIEW_CMD" 2>&1 | tee "$RAW_LOG"
+  cat "$PROMPT_FILE" | timeout "$REVIEW_TIMEOUT" bash -c "$REVIEW_CMD" 2>&1 | tee "$RAW_LOG" | tee -a "$LIVE_LOG"
 else
   # shellcheck disable=SC2002
-  cat "$PROMPT_FILE" | bash -c "$REVIEW_CMD" 2>&1 | tee "$RAW_LOG"
+  cat "$PROMPT_FILE" | bash -c "$REVIEW_CMD" 2>&1 | tee "$RAW_LOG" | tee -a "$LIVE_LOG"
 fi
 rc=${PIPESTATUS[1]}
 set -e
@@ -299,24 +309,25 @@ with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 PY
 
-echo
-echo "============================================================"
-echo "  对抗审查完成: agent=$AGENT reviewer=$REVIEWER"
-echo "  报告: $REPORT"
+{
+  echo
+  echo "============================================================"
+  echo "  对抗审查完成: agent=$AGENT reviewer=$REVIEWER  裁决=${VERDICT:-UNKNOWN}"
+  echo "  报告: $REPORT"
+  echo "============================================================"
+} | tee -a "$LIVE_LOG"
+
 case "$VERDICT" in
   PASS)
-    echo "  裁决: ✅ PASS"
-    echo "============================================================"
+    echo "  裁决: ✅ PASS" | tee -a "$LIVE_LOG"
     exit 0
     ;;
   FAIL)
-    echo "  裁决: ❌ FAIL — 主 Claude 须读报告, 把问题并入 04 修复 → 派回编码 agent"
-    echo "============================================================"
+    echo "  裁决: ❌ FAIL — 主 Claude 须读报告, 把问题并入 04 修复 → 派回编码 agent" | tee -a "$LIVE_LOG"
     exit 1
     ;;
   *)
-    echo "  裁决: ⚠️ 未解析到 VERDICT(reviewer rc=$rc) — 主 Claude 必须人工读报告判定, 不得默认通过"
-    echo "============================================================"
+    echo "  裁决: ⚠️ 未解析到 VERDICT(reviewer rc=$rc) — 主 Claude 必须人工读报告判定, 不得默认通过" | tee -a "$LIVE_LOG"
     exit 3
     ;;
 esac

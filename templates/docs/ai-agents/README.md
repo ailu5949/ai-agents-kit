@@ -47,21 +47,19 @@ signal → watch-agent.sh → agent-runner.sh → codex → state/event
 # 面板 1 — 主 Claude
 claude .
 
-# 面板 2 — 一键起 backend + frontend watcher (一次性, 真后台, 关窗口不影响)
-bash .aiagents/bin/agentctl.sh up
-
-# 面板 3 (可选) — 监控双 agent 实时日志
-bash .aiagents/bin/agentctl.sh logs both
+# 面板 2 — 起 watcher + 直接跟双 agent 日志 (一条命令搞定, 省得再敲 logs both)
+bash .aiagents/bin/agentctl.sh up logs
+#   纯起 watcher 不跟日志:  bash .aiagents/bin/agentctl.sh up
+#   起 watcher + 编码 + 对抗审查全跟: bash .aiagents/bin/agentctl.sh up logs all
 ```
 
 PowerShell 等价:
 
 ```powershell
-pwsh .aiagents\bin\agentctl.ps1 up
-pwsh .aiagents\bin\agentctl.ps1 logs both
+pwsh .aiagents\bin\agentctl.ps1 up logs
 ```
 
-停 watcher:`agentctl.sh down`(或 `agentctl.ps1 down`)。
+`up logs` 起完 watcher 立即进入跟随,Ctrl+C 只停跟随、watcher 仍后台。停 watcher:`agentctl.sh down`(或 `agentctl.ps1 down`)。
 
 > v3.5+ 起不再支持 tmux 一屏分屏方式(`start-agents.sh`)。已装项目重跑 install 会自动备份遗留的 `start-agents.sh` 到 `.deprecated.*`。
 
@@ -124,6 +122,8 @@ Claude 审查编码 agent 产出时**必须**走完 6 项(详见项目根 `CLAUD
 
 - reviewer 独立读 spec + 本轮 git diff,默认有罪,落报告 `reviews/adversarial-<agent>-<ts>.md`,末行 `VERDICT: PASS|FAIL`
 - 主 Claude 是仲裁者:PASS → ready-for-human;FAIL → 逐条核实 → 04 修复 → 派回
+- **不是常驻 watched agent**:主 Claude 在验证关卡一次性拉起 codex(不走 watcher 流水线)
+- **实时看找茬过程**:`agentctl.sh logs review`(或 `logs all` 编码+审查一窗),写稳定路径 `.aiagents/logs/adversarial-<agent>.log`
 - 开启:`install.sh --with-adversarial-review` 或改 `config.json workflow.adversarial_review.enabled`
 - 异构性:编码用 claude → reviewer 用 codex(反之亦然),相同会警告
 

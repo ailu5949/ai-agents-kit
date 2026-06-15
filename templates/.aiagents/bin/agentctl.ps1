@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("up", "start", "down", "stop", "restart", "status", "logs", "dispatch", "wait", "watch", "memory", "release-without-verify")]
+  [ValidateSet("up", "start", "down", "stop", "restart", "status", "logs", "dispatch", "wait", "watch", "memory", "cost", "doctor", "release-without-verify")]
   [string]$Command = "status",
 
   [Parameter(Position = 1)]
@@ -482,6 +482,8 @@ function Get-LogPath([string]$Agent, [string]$Kind = 'pretty') {
     'pretty' { return Join-Path $LogDir "${abbr}_${today}.log" }
     'worker' { return Join-Path $LogDir "worker-${Agent}.log" }
     'raw'    { return Join-Path $LogDir "${abbr}_${today}.log.raw" }
+    'adversarial' { return Join-Path $LogDir "adversarial-${Agent}.log" }  # v3.8
+    'review'      { return Join-Path $LogDir "adversarial-${Agent}.log" }
     default  { return $null }
   }
 }
@@ -493,13 +495,13 @@ function Logs-Snapshot {
   foreach ($agent in @('backend', 'frontend')) {
     Write-Host ""
     Write-Host "[$agent]"
-    foreach ($kind in @('pretty', 'worker', 'raw')) {
+    foreach ($kind in @('pretty', 'worker', 'raw', 'adversarial')) {
       $p = Get-LogPath $agent $kind
       if (Test-Path $p) {
         $size = (Get-Item $p).Length
-        Write-Host ("  {0,-7} {1} ({2} bytes)" -f "${kind}:", $p, $size)
+        Write-Host ("  {0,-11} {1} ({2} bytes)" -f "${kind}:", $p, $size)
       } else {
-        Write-Host ("  {0,-7} {1} (不存在)" -f "${kind}:", $p)
+        Write-Host ("  {0,-11} {1} (不存在)" -f "${kind}:", $p)
       }
     }
     $pp = Get-LogPath $agent 'pretty'
@@ -512,7 +514,9 @@ function Logs-Snapshot {
   Write-Host "follow 用法:"
   Write-Host "  pwsh $PSCommandPath logs backend           # 跟 backend pretty"
   Write-Host "  pwsh $PSCommandPath logs frontend          # 跟 frontend pretty"
-  Write-Host "  pwsh $PSCommandPath logs both              # 双 agent 同时跟"
+  Write-Host "  pwsh $PSCommandPath logs both              # 双 agent 编码 pretty 同时跟"
+  Write-Host "  pwsh $PSCommandPath logs all               # 双 agent 编码 + 对抗审查 一窗全跟"
+  Write-Host "  pwsh $PSCommandPath logs review            # 只跟两个 agent 的对抗审查实时流"
   Write-Host "  pwsh $PSCommandPath logs backend worker    # 跟 watcher 自身输出"
   Write-Host "  pwsh $PSCommandPath logs backend raw       # 跟 claude 原始 JSON"
 }
@@ -528,7 +532,12 @@ function _Logs-Filter {
 }
 
 function Logs-Follow([string]$Agent, [string]$Kind = 'pretty') {
-  if ($Agent -eq 'both' -or $Agent -eq 'all') {
+  # v3.8: review/all 多文件跟随直接转发 bash 版 (Git Bash 是 kit 硬依赖, 避免 Job 代码重复)
+  if ($Agent -eq 'review' -or $Agent -eq 'adversarial' -or $Agent -eq 'all') {
+    bash "$PSScriptRoot/agentctl.sh" logs $Agent
+    return
+  }
+  if ($Agent -eq 'both') {
     $be = Get-LogPath 'backend' 'pretty'
     $fe = Get-LogPath 'frontend' 'pretty'
     if (-not (Test-Path $be)) { New-Item -ItemType File -Path $be -Force | Out-Null }
@@ -578,7 +587,17 @@ function Logs-Follow([string]$Agent, [string]$Kind = 'pretty') {
 
 # Change 7: Bottom dispatch table
 switch ($Command) {
-  "up"       { Watchers-Up }
+  "up"       {
+    Watchers-Up
+    # v3.8: up logs [target] → 起 watcher 后立即跟日志 (Ctrl+C 仅停跟随)
+    if ($Target -in @('logs', '-f', '--logs', '--follow')) {
+      $followTarget = if ($LogKind -and $LogKind -ne 'pretty') { $LogKind } else { 'both' }
+      Write-Host ""
+      Write-Host "── watcher 已后台启动, 下面开始跟日志 (Ctrl+C 仅停跟随, 不停 watcher) ──"
+      Write-Host ""
+      Logs-Follow $followTarget 'pretty'
+    }
+  }
   "start"    { Watchers-Up }
   "down"     { Watchers-Down }
   "stop"     { Watchers-Down }
