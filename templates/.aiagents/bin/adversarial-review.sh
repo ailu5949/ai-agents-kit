@@ -27,16 +27,20 @@ set -uo pipefail
 AGENT=""
 SINCE_REF=""
 PROVIDER_FLAG=""
+FORCE=0          # --force: 无视 min_diff_lines 阈值, 强制跑 (小改动也审)
+STRICT=0         # --strict: 临时把 fail_on 提到 any (中低危也打回)
+_USAGE="用法: adversarial-review.sh <backend|frontend> [--since <ref>] [--provider <name>] [--force] [--strict]"
 while [ $# -gt 0 ]; do
   case "$1" in
     backend|frontend) AGENT="$1"; shift ;;
     --since) shift; SINCE_REF="${1:-}"; shift ;;
     --provider) shift; PROVIDER_FLAG="${1:-}"; shift ;;
-    *) echo "未知参数: $1" >&2; echo "用法: adversarial-review.sh <backend|frontend> [--since <ref>] [--provider <name>]" >&2; exit 2 ;;
+    --force) FORCE=1; shift ;;
+    --strict) STRICT=1; shift ;;
+    *) echo "未知参数: $1" >&2; echo "$_USAGE" >&2; exit 2 ;;
   esac
 done
-[ "$AGENT" = backend ] || [ "$AGENT" = frontend ] || {
-  echo "用法: adversarial-review.sh <backend|frontend> [--since <ref>] [--provider <name>]" >&2; exit 2; }
+[ "$AGENT" = backend ] || [ "$AGENT" = frontend ] || { echo "$_USAGE" >&2; exit 2; }
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 CONFIG_JSON="$ROOT/.aiagents/config.json"
@@ -75,6 +79,16 @@ PY
 )"
   [ -n "$v" ] && echo "$v" || echo "$def"
 }
+
+# ---------- v3.9 三旋钮配置 ----------
+# 1) 选择性触发: 改动行数 < min_diff_lines 直接跳过 (不跑 codex), 省 token + 时间
+MIN_DIFF_LINES="$(cfg "workflow.adversarial_review.min_diff_lines" "40")"
+case "$MIN_DIFF_LINES" in ''|*[!0-9]*) MIN_DIFF_LINES=40 ;; esac
+# 2) 严重度门: high=只有高危/违 spec 才 FAIL (默认, 中低危降级成建议不打回); any=任何问题都 FAIL
+FAIL_ON="$(cfg "workflow.adversarial_review.fail_on" "high")"
+[ "$STRICT" = 1 ] && FAIL_ON="any"
+# 3) 降配: codex 推理强度 (medium 够审查, 省于默认 xhigh); 空=不覆盖走 codex 自身默认
+REASONING_EFFORT="$(cfg "workflow.adversarial_review.reasoning_effort" "medium")"
 
 # ---------- reviewer provider 解析 ----------
 REVIEWER="$PROVIDER_FLAG"
@@ -141,6 +155,34 @@ fi
   exit 2
 }
 
+# ---------- 旋钮 1: 选择性触发 — 小改动直接跳过, 不烧 codex ----------
+# 统计本轮变更行数(diff 里 +/- 开头但排除 +++/--- 文件头)
+CHANGED_LINES="$(printf '%s\n' "$DIFF_TEXT" | grep -cE '^[+-]([^+-]|$)' 2>/dev/null || echo 0)"
+if [ "$FORCE" != 1 ] && [ "$CHANGED_LINES" -lt "$MIN_DIFF_LINES" ]; then
+  echo "⏭️  改动仅 ${CHANGED_LINES} 行 (< 阈值 ${MIN_DIFF_LINES}) — 跳过对抗审查 (琐碎改动)。"
+  echo "    要强制审查: 加 --force;要改阈值: config.json workflow.adversarial_review.min_diff_lines"
+  # 落一条轻量 SKIPPED 报告 + event, 让主 Claude / 日志有据可查
+  TS="$(date '+%Y%m%d-%H%M%S')"
+  SKIP_REPORT="$REVIEW_DIR/adversarial-${AGENT}-${TS}.md"
+  {
+    echo "# 对抗审查 · $AGENT · $TS · SKIPPED"
+    echo
+    echo "- 改动行数 ${CHANGED_LINES} < 阈值 ${MIN_DIFF_LINES} → 选择性跳过 (未跑 reviewer, 零 token)"
+    echo "- diff 范围: \`$BASE..HEAD\` (scope: \`$REL_DIR/\`)"
+    echo "- 强制审查: \`/adversarial-review $AGENT --force\`"
+  } > "$SKIP_REPORT"
+  "$PYTHON_BIN" - "$STATE_DIR/events.jsonl" "$AGENT" "$REVIEWER" <<'PY' 2>/dev/null || true
+import json, os, sys, datetime
+path, agent, reviewer = sys.argv[1:4]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+rec = {"time": datetime.datetime.now().astimezone().isoformat(), "agent": agent,
+       "provider": reviewer, "status": "adversarial-review", "message": "verdict=SKIPPED (below min_diff_lines)"}
+open(path, "a", encoding="utf-8").write(json.dumps(rec, ensure_ascii=False) + "\n")
+PY
+  echo "  裁决: ⏭️ SKIPPED — 主 Claude 视为通过, 直接推 ready-for-human"
+  exit 0
+fi
+
 # diff 过大保护(codex args/上下文上限): 截断到 ~120KB, 提示 reviewer 自己 git diff 补全
 DIFF_BYTES="$(printf '%s' "$DIFF_TEXT" | wc -c)"
 DIFF_TRUNCATED=0
@@ -159,6 +201,21 @@ DESIGN="$SPEC_DIR/01.5-设计.md"; [ -f "$DESIGN" ] || DESIGN="$SPEC_DIR/01.5-de
 TESTCASES="$SPEC_DIR/01.6-测试用例.md"; [ -f "$TESTCASES" ] || TESTCASES="$SPEC_DIR/01.6-test-cases.md"
 REQ="$SPEC_DIR/01-需求.md"; [ -f "$REQ" ] || REQ="$SPEC_DIR/01-requirements.md"
 
+# ---------- 严重度门: 据 FAIL_ON 调立场 + 裁决规则 ----------
+if [ "$FAIL_ON" = "any" ]; then
+  STANCE_TEXT="# 立场: 严格 (strict, default-reject)
+- 假设这份交付**有问题**, 把问题找出来。**任何**严重度的问题(含中/低)都算不通过。
+- 不确定某点是否达标 → 判 FAIL 并说明疑点。"
+  VERDICT_RULE="出现**任何**严重度(高/中/低)问题, 或 spec 验收点未满足 → FAIL;完全无问题才 PASS。"
+else
+  STANCE_TEXT="# 立场: 抓大放小 (只拦高危, 减少无谓返工)
+- 认真找问题, 但**只有 [高] 严重度问题、或 spec 验收点确实未实现, 才判 FAIL**。
+- [中]/[低] 问题(风格、小优化、非阻塞建议)照常列出来供参考, 但**不影响裁决**(仍 PASS)。
+- 判 [高] 的标准要克制: 真能导致 bug / 数据错误 / 安全问题 / spec 验收点缺失才算高; 拿不准是高还是中 → 算中(不打回)。
+- 目的: 别因为吹毛求疵触发一整轮重做, 把返工留给真正该返工的问题。"
+  VERDICT_RULE="仅当存在 [高] 严重度问题、或 spec 验收点未实现 → FAIL;只有 [中]/[低] 问题时 → **PASS**(问题列为建议)。"
+fi
+
 # ---------- 构建 REFUTE 提示 ----------
 PROMPT_FILE="$(mktemp)"
 {
@@ -166,14 +223,12 @@ PROMPT_FILE="$(mktemp)"
 你是 ai-agents-kit 的**对抗性审查员 (Adversarial Reviewer)**, provider=$REVIEWER。
 你与写这段代码的编码 agent 是**异构的两个脑子** — 你的职责是独立"找茬", 不是确认。
 
-# 立场: 默认有罪 (default-reject)
-- 假设这份交付**有问题**, 你的任务是把问题找出来。
-- 不确定某点是否达标 → 判 **FAIL** 并说明疑点, 不要给"疑罪从无"的通过。
+$STANCE_TEXT
 - 不要复述编码 agent 的自述 / commit message 的"我全过了" — 那不是证据。
 - 你**只读不改**: 可以读任意文件、跑 git/grep/读测试, 但**禁止修改任何业务代码**。只输出审查报告到 stdout。
 
-# 审查维度 (逐项给结论 + 证据)
-1. **spec 符合度**: 派单 spec(下方)每条验收点, 代码是否真的实现? 漏哪条?
+# 审查维度 (逐项给结论 + 证据, 每条问题标 [高]/[中]/[低])
+1. **spec 符合度**: 派单 spec(下方)每条验收点, 代码是否真的实现? 漏哪条?(漏验收点=高)
 2. **正确性**: 边界条件 / 空值 / 异常路径 / 并发 / 错误处理有没有漏。读实际代码, 别信注释。
 3. **范围越界 (D Surgical)**: diff 里有没有 spec 没点名的改动 / 顺手重构 / 等价 API 互换 / 重命名。
 4. **测试真实性**: 测试是否只覆盖快乐路径? 有没有 assert 形同虚设 / mock 掉了被测逻辑 / skip 关键用例?
@@ -183,18 +238,15 @@ PROMPT_FILE="$(mktemp)"
 ## 对抗审查 · $AGENT · reviewer=$REVIEWER
 
 ### 发现的问题
-(逐条: [严重度 高/中/低] [维度] 文件:行 — 问题描述 + 为什么是问题 + 证据)
+(逐条: [高/中/低] [维度] 文件:行 — 问题描述 + 为什么是问题 + 证据)
 (没问题就写"未发现问题", 但你应该已经尽力找过)
 
 ### 逐维度结论
-- spec 符合度: ...
-- 正确性: ...
-- 范围: ...
-- 测试: ...
-- 隐藏债: ...
+- spec 符合度 / 正确性 / 范围 / 测试 / 隐藏债: 各一句
 
 ### 最终裁决
-(最后一行**必须**是下面之一, 供脚本解析 — 有任何"高"严重度问题, 或 spec 验收点未满足, 判 FAIL)
+(裁决规则: $VERDICT_RULE)
+(最后一行**必须**是下面之一, 供脚本解析:)
 VERDICT: PASS
 或
 VERDICT: FAIL
@@ -220,7 +272,7 @@ EOF
     echo "> ⚠️ diff 超 120KB 已截断。请你自己在工作目录跑 \`git diff $BASE HEAD -- $REL_DIR\` 看完整改动。"
   fi
   echo
-  echo "现在开始审查。记住: 默认有罪, 找茬, 最后一行输出 VERDICT: PASS 或 VERDICT: FAIL。"
+  echo "现在开始审查。记住裁决规则, 最后一行输出 VERDICT: PASS 或 VERDICT: FAIL。"
 } > "$PROMPT_FILE"
 
 # ---------- 跑 reviewer ----------
@@ -240,14 +292,22 @@ mkdir -p "$(dirname "$RAW_LOG")"
 model_arg=""
 [ -n "$REVIEWER_MODEL" ] && model_arg="--model $REVIEWER_MODEL"
 
-echo "🔍 对抗审查启动: agent=$AGENT reviewer=$REVIEWER diff=$BASE..HEAD scope=$REL_DIR"
+echo "🔍 对抗审查启动: agent=$AGENT reviewer=$REVIEWER diff=$BASE..HEAD (${CHANGED_LINES} 行) scope=$REL_DIR"
+echo "   旋钮: fail_on=$FAIL_ON · reasoning=${REASONING_EFFORT:-default} · min_diff_lines=$MIN_DIFF_LINES"
 echo "   报告将落: $REPORT"
 echo "   实时跟随: bash .aiagents/bin/agentctl.sh logs review  (或 logs $AGENT adversarial)"
+
+# v3.9 旋钮 3: 降配推理强度 (codex). 审查要广度不要 xhigh 深推理 — 省时省 token。
+# 非 --strict-config 下未知 key 也不硬报错, 安全。空 REASONING_EFFORT 则不覆盖。
+effort_arg=""
+if [ -n "$REASONING_EFFORT" ] && [ "$REVIEWER" = codex ]; then
+  effort_arg="-c model_reasoning_effort=\"$REASONING_EFFORT\""
+fi
 
 # reviewer 在 ROOT 运行(能读整个 repo + 跑 git diff)
 case "$REVIEWER" in
   codex)
-    REVIEW_CMD="cd '$ROOT' && '$REVIEWER_BIN' exec $REVIEWER_ARGS $model_arg -"
+    REVIEW_CMD="cd '$ROOT' && '$REVIEWER_BIN' exec $REVIEWER_ARGS $effort_arg $model_arg -"
     ;;
   claude)
     # claude 用 -p + stdin; 带 v3.5.1 隔离(防 user 插件污染) + 流式关掉(只要最终文本)
@@ -255,7 +315,7 @@ case "$REVIEWER" in
     ;;
   *)
     # 未知 provider: 尝试 codex 风格
-    REVIEW_CMD="cd '$ROOT' && '$REVIEWER_BIN' exec $REVIEWER_ARGS $model_arg -"
+    REVIEW_CMD="cd '$ROOT' && '$REVIEWER_BIN' exec $REVIEWER_ARGS $effort_arg $model_arg -"
     ;;
 esac
 

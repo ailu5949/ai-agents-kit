@@ -288,6 +288,16 @@ coding agent done → Karpathy 6 points (main Claude self-review) → real-verif
 - **Heterogeneity**: coding with claude/opus → reviewer codex (another brain); script warns if reviewer == coding provider
 - **Independent evidence**: codex runs its own git diff (`runtime/<agent>.review-base..HEAD`) + grep, doesn't trust the coding agent's self-report
 - **Main Claude is the arbiter**: PASS → ready-for-human; FAIL → verify each issue (codex can misjudge too) → fold into 04-fix → dispatch back
+
+**Three cost knobs (v3.9, defaults already tuned for cost, under `workflow.adversarial_review`)** — fixes "runs on every task, too many round-trips, expensive":
+
+| Knob | Default | Effect |
+|---|---|---|
+| `min_diff_lines` | `40` | Changes below the threshold → **skip codex entirely** (zero cost on trivial edits); `--force` to override |
+| `fail_on` | `high` | **Only high-severity / spec violations block**; medium/low downgraded to advisory, no redo loop (kills most round-trips); `--strict` for strict mode |
+| `reasoning_effort` | `medium` | codex runs at medium reasoning (enough for review, cheaper than default xhigh) |
+
+For full-speed iteration: set `enabled` to `false`, run `/adversarial-review <agent> --force` manually only at high-risk milestones.
 - **Not a persistent watched agent**: it's a one-shot codex launched by main Claude at the verify gate, outside the watcher/agent-runner pipeline
 - **Watch codex hunt live**: `agentctl.sh logs review` (or `logs all` for coding + review in one window); streams to the stable path `.aiagents/logs/adversarial-<agent>.log`
 - Permanent report lands at `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`

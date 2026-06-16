@@ -385,7 +385,13 @@ if (Test-Path $cfgJsonPath) {
       $existingCfg.workflow | Add-Member -NotePropertyName test_cases -NotePropertyValue ([ordered]@{ enabled = $false; spec_file = "docs/ai-agents/specs/01.6-测试用例.md" }) -Force
     }
     if (-not $existingCfg.workflow.adversarial_review) {
-      $existingCfg.workflow | Add-Member -NotePropertyName adversarial_review -NotePropertyValue ([ordered]@{ enabled = $false; provider = $script:AdversarialProvider; timeout = 900 }) -Force
+      $existingCfg.workflow | Add-Member -NotePropertyName adversarial_review -NotePropertyValue ([ordered]@{ enabled = $false; provider = $script:AdversarialProvider; timeout = 900; min_diff_lines = 40; fail_on = "high"; reasoning_effort = "medium" }) -Force
+    } else {
+      foreach ($kv in @(@('min_diff_lines',40), @('fail_on','high'), @('reasoning_effort','medium'))) {
+        if (-not $existingCfg.workflow.adversarial_review.PSObject.Properties[$kv[0]]) {
+          $existingCfg.workflow.adversarial_review | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force
+        }
+      }
     }
     if ($script:WithDesignDocBool) { $existingCfg.workflow.design_doc.enabled = $true }
     if ($script:WithTestCasesBool) { $existingCfg.workflow.test_cases.enabled = $true }
@@ -414,7 +420,7 @@ if (Test-Path $cfgJsonPath) {
       human_override_after_retry = 3
       design_doc = [ordered]@{ enabled = $script:WithDesignDocBool; spec_file = "docs/ai-agents/specs/01.5-设计.md" }
       test_cases = [ordered]@{ enabled = $script:WithTestCasesBool; spec_file = "docs/ai-agents/specs/01.6-测试用例.md" }
-      adversarial_review = [ordered]@{ enabled = $script:WithAdversarialBool; provider = $script:AdversarialProvider; timeout = 900 }
+      adversarial_review = [ordered]@{ enabled = $script:WithAdversarialBool; provider = $script:AdversarialProvider; timeout = 900; min_diff_lines = 40; fail_on = "high"; reasoning_effort = "medium" }
     }
     notify    = [ordered]@{
       push = [ordered]@{ provider = ""; key = ""; url = ""; events = @("done","failed","timeout","stale") }

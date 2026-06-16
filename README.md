@@ -284,6 +284,16 @@ bash install.sh --yes --with-adversarial-review                  # 开启 (revie
 - **异构原则**:编码用 claude/opus → reviewer 用 codex(换一个脑子);reviewer == 编码 provider 时脚本警告
 - **独立取证**:codex 自己跑 git diff(`runtime/<agent>.review-base..HEAD`)+ grep,不信编码 agent 自述
 - **主 Claude 是仲裁者**:PASS → 推 ready-for-human;FAIL → 逐条核实问题(codex 也会误判)→ 并入 04 修复 → 派回
+
+**三旋钮减负(v3.9,默认值已是省钱档,在 `workflow.adversarial_review`)** —— 解决"每个任务都跑、来回多、token 贵":
+
+| 旋钮 | 默认 | 作用 |
+|---|---|---|
+| `min_diff_lines` | `40` | 改动行数低于阈值 → **直接跳过不跑 codex**(琐碎改动零开销);`--force` 强制 |
+| `fail_on` | `high` | **只有高危 / 违 spec 才打回**;中低危降级成"建议"不触发重做(砍掉大部分来回);`--strict` 临时严格 |
+| `reasoning_effort` | `medium` | codex 用 medium 推理(够审查,省于默认 xhigh) |
+
+想全速迭代:把 `enabled` 设 `false`,只在高风险节点手动 `/adversarial-review <agent> --force`。
 - **不是常驻 watched agent**:它是主 Claude 在验证关卡**一次性**拉起的 codex,不走 watcher/agent-runner 流水线
 - **实时看 codex 找茬过程**:`agentctl.sh logs review`(或 `logs all` 跟编码 + 审查一窗),写到稳定路径 `.aiagents/logs/adversarial-<agent>.log`
 - 永久报告落 `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`

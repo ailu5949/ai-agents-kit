@@ -529,10 +529,17 @@ if existing and existing.get("providers"):
     if with_tests and not wf["test_cases"]["enabled"]:
         wf["test_cases"]["enabled"] = True
         needs_save = True
-    # v3.7: adversarial_review 块 (对抗审查, 默认关)
+    # v3.7/v3.9: adversarial_review 块 (对抗审查, 默认关 + 三旋钮减负)
     if "adversarial_review" not in wf:
-        wf["adversarial_review"] = {"enabled": False, "provider": adv_provider, "timeout": 900}
+        wf["adversarial_review"] = {"enabled": False, "provider": adv_provider, "timeout": 900,
+                                     "min_diff_lines": 40, "fail_on": "high", "reasoning_effort": "medium"}
         needs_save = True
+    else:
+        # 已有块 — 补 v3.9 三旋钮 (老项目升级)
+        for k, v in (("min_diff_lines", 40), ("fail_on", "high"), ("reasoning_effort", "medium")):
+            if k not in wf["adversarial_review"]:
+                wf["adversarial_review"][k] = v
+                needs_save = True
     if with_adv and not wf["adversarial_review"]["enabled"]:
         wf["adversarial_review"]["enabled"] = True
         wf["adversarial_review"]["provider"] = adv_provider
@@ -624,8 +631,11 @@ if with_design:
 if with_tests:
     wf["test_cases"]["enabled"] = True
 
-# v3.7: adversarial_review 块 (对抗审查, 默认关 — reviewer 默认 codex)
-wf.setdefault("adversarial_review", {"enabled": False, "provider": adv_provider, "timeout": 900})
+# v3.7/v3.9: adversarial_review 块 (对抗审查, 默认关 — reviewer 默认 codex + 三旋钮减负)
+wf.setdefault("adversarial_review", {"enabled": False, "provider": adv_provider, "timeout": 900,
+                                     "min_diff_lines": 40, "fail_on": "high", "reasoning_effort": "medium"})
+for k, v in (("min_diff_lines", 40), ("fail_on", "high"), ("reasoning_effort", "medium")):
+    wf["adversarial_review"].setdefault(k, v)
 if with_adv:
     wf["adversarial_review"]["enabled"] = True
     wf["adversarial_review"]["provider"] = adv_provider
@@ -698,7 +708,7 @@ elif command -v jq >/dev/null 2>&1; then
            human_override_after_retry: 3,
            design_doc: {enabled: $design, spec_file: "docs/ai-agents/specs/01.5-设计.md"},
            test_cases: {enabled: $tests,  spec_file: "docs/ai-agents/specs/01.6-测试用例.md"},
-           adversarial_review: {enabled: $adv, provider: $advp, timeout: 900}
+           adversarial_review: {enabled: $adv, provider: $advp, timeout: 900, min_diff_lines: 40, fail_on: "high", reasoning_effort: "medium"}
          },
          notify: {
            push: {provider: "", key: "", url: "", events: ["done","failed","timeout","stale"]}

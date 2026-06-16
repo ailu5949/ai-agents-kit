@@ -204,15 +204,19 @@ state=ready-for-human ← Lane 拍板:收下 / 打回 / 推迟
 
 **怎么跑**: 执行 `/adversarial-review <agent>`(slash command),它背后调 `bash .aiagents/bin/adversarial-review.sh <agent>`:
 - reviewer(默认 codex)独立读 spec + 本轮 git diff(`runtime/<agent>.review-base..HEAD`),自己跑 git/grep,**不信编码 agent 自述**
-- 默认有罪立场:不确定就判 FAIL
 - 落报告 `docs/ai-agents/reviews/adversarial-<agent>-<ts>.md`,末行 `VERDICT: PASS|FAIL`,exit 0/1/3
+
+**v3.9 三旋钮(减负,默认值在 `workflow.adversarial_review`)**:
+- **选择性触发** `min_diff_lines`(默认 40):改动行数低于阈值 → 脚本**直接跳过不跑 codex**(exit 0 / SKIPPED),琐碎改动零开销。你也可以自己判断:1~2 行 typo 修复直接跳过别调本命令。强制审查加 `--force`。
+- **严重度门** `fail_on`(默认 `high`):codex **只对高危 / spec 验收点缺失判 FAIL**;中低危降级为"建议",列在报告里但**不触发重做**。需要严格模式临时加 `--strict`(等价 fail_on=any)。
+- **降配** `reasoning_effort`(默认 `medium`):codex 用 medium 推理(够审查,省于 xhigh)。
 
 **你是最终仲裁者**(脚本只产证据,不自动改 state / 不自动派单):
 
 | 脚本结果 | 你的动作 |
 |---|---|
-| exit 0 / VERDICT PASS | 对抗结论追加进 `reviews/<agent>-review.md` § 对抗审查段 → 推 `ready-for-human` |
-| exit 1 / VERDICT FAIL | **逐条核实** codex 报的问题(它也会误判)→ 成立的并入 `04-Bug修复-<agent>.md` → `/bugfix-<agent>` 派回 → 回真打验证起点 |
+| exit 0 / VERDICT PASS / SKIPPED | 对抗结论(或"改动小已跳过")追加进 `reviews/<agent>-review.md` § 对抗审查段 → 推 `ready-for-human` |
+| exit 1 / VERDICT FAIL | **逐条核实** codex 报的**高危**问题(它也会误判)→ 成立的并入 `04-Bug修复-<agent>.md` → `/bugfix-<agent>` 派回 → 回真打验证起点。报告里的中低危"建议"**不必**强制返工,可记入 memory 下轮改 |
 | exit 3 / 未解析到 VERDICT | reviewer 异常 → **不得默认通过**,人工读报告判定或修好 reviewer 重跑 |
 
 **仲裁纪律**:

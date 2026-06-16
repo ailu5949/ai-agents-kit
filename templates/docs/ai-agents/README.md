@@ -168,6 +168,13 @@ Claude 审查编码 agent 产出时**必须**走完 6 项(详见项目根 `CLAUD
 - 开启:`install.sh --with-adversarial-review` 或改 `config.json workflow.adversarial_review.enabled`
 - 异构性:编码用 claude → reviewer 用 codex(反之亦然),相同会警告
 
+**三旋钮减负(v3.9,`workflow.adversarial_review`)** —— 治"每任务都跑/来回多/贵":
+- `min_diff_lines`(默认 40):改动行数低于阈值直接跳过不跑 codex(`--force` 强制)
+- `fail_on`(默认 high):只高危/违 spec 才打回,中低危降级成建议不返工(`--strict` 严格)
+- `reasoning_effort`(默认 medium):codex 用 medium 推理,省于 xhigh
+
+全速迭代可把 `enabled` 设 false,只在高风险节点手动 `/adversarial-review <agent> --force`。
+
 ## 成本 + 诊断(v3.6)
 
 ```bash
