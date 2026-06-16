@@ -29,10 +29,10 @@
 
 > **开启可选产物**:在 `install.sh` 加 `--with-design-doc --with-test-cases`,或编辑 `.aiagents/config.json` 的 `workflow.design_doc.enabled` / `workflow.test_cases.enabled`。默认两个都关,适合小需求 / Demo;复杂需求(多模块 / 多状态机 / 跨服务)建议开启。
 
-## v2 执行链(必须显式)
+## 执行链(必须显式)
 
 ```
-signal → watch-agent.sh → agent-runner.sh → codex → state/event
+signal → watch-agent.sh → agent-runner.sh → provider(codex/claude) → state/event
 ```
 
 - `signal`(`.aiagents/signals/*`)只是触发器
@@ -73,14 +73,55 @@ pwsh .aiagents\bin\agentctl.ps1 up logs
 6. Claude 产 `specs/03-前端编码.md` → 你审阅,确认
 7. 你说"派后端"(或 `/dispatch-backend`)→ watcher 调度 runner → 产生日志 + 状态/事件
 8. Backend 编码 agent 完成 → state.backend.state 变成 `done-awaiting-review` → 你下次给 Claude 发消息时,Stop hook 自动注入"后端完成,请审查"
-9. Claude 走 Karpathy 6 项审查 → 追加 `reviews/backend-review.md` → 通过或生成 `04-Bug修复-backend.md`
+9. Claude 走 Karpathy 6 项审查 → 真打验证(pytest/lint/curl)→ **(若开了对抗审查)** `/adversarial-review backend` 让 codex 独立找茬 → 追加 `reviews/backend-review.md` → 通过或生成 `04-Bug修复-backend.md`
 10. 通过则你说"派前端",进入前端循环;不通过 Claude 自动 `/bugfix-backend`(最多 3 轮)
 11. 前端走完 + 联调通过后 → `/retrospective` 复盘 + 把经验写回 `.aiagents/memory/`
 
-任何时候你可以手动敲:
-- `/status` — 查看三 agent 现况
-- `/review` — 手动重审(兜底)
-- `/memory "<经验>"` — 写一条记忆
+## 命令速查
+
+### Claude 面板内的 slash 命令(主 Claude 跑)
+
+| 命令 | 作用 |
+|------|------|
+| `/dispatch-backend` / `/dispatch-frontend` | 派编码任务(可加 `--provider claude --model sonnet --timeout 3600`) |
+| `/bugfix-backend` / `/bugfix-frontend` | 派修复(走 04-Bug修复.md) |
+| `/status` | 查看 agent 现况 |
+| `/review` | 手动重审(兜底,正常靠 Stop hook 自动注入) |
+| `/adversarial-review <agent>` | 对抗性审查:异构 provider 独立找茬(需 `workflow.adversarial_review.enabled`) |
+| `/memory "<经验>"` | 写一条记忆 |
+| `/retrospective` | 整轮复盘,回写 memory |
+| `/handover` | 切换会话/换模型前生成状态快照 |
+| `/retry-other-provider <agent>` | 失败切对家 provider 接续 |
+| `/release-without-verify <agent> "<reason>"` | 应急 bypass 真打验证关卡 |
+
+### 终端里的 agentctl 命令(你 Lane 跑)
+
+```bash
+# 起停 watcher
+bash .aiagents/bin/agentctl.sh up           # 起 backend + frontend watcher(后台)
+bash .aiagents/bin/agentctl.sh up logs      # 起 watcher + 立即跟双 agent 日志(省得再敲 logs both)
+bash .aiagents/bin/agentctl.sh up logs all  # 起 watcher + 编码 + 对抗审查 一窗全跟
+bash .aiagents/bin/agentctl.sh down         # 停所有
+bash .aiagents/bin/agentctl.sh restart      # down + up
+bash .aiagents/bin/agentctl.sh status       # agent + provider + worker pid
+
+# 监控日志
+bash .aiagents/bin/agentctl.sh logs         # 列日志路径 + 末尾快照(不 follow)
+bash .aiagents/bin/agentctl.sh logs both    # 跟 backend + frontend 编码流
+bash .aiagents/bin/agentctl.sh logs all     # 编码 + 对抗审查 一窗全跟
+bash .aiagents/bin/agentctl.sh logs review  # 只跟对抗审查实时流(codex 找茬过程)
+bash .aiagents/bin/agentctl.sh logs backend [pretty|worker|raw|adversarial]
+
+# 观测 + 诊断
+bash .aiagents/bin/agentctl.sh cost         # token 成本汇总(按日期 × agent + 今日/累计)
+bash .aiagents/bin/agentctl.sh doctor       # 一键诊断:watcher/心跳/state 卡点/log 活性 + 建议动作
+
+# 其他
+bash .aiagents/bin/agentctl.sh memory "<经验>"            # 写一条记忆
+bash .aiagents/bin/notify-push.sh backend done "<msg>" <项目名>   # 手测移动端推送
+```
+
+PowerShell 把 `bash .aiagents/bin/agentctl.sh` 换成 `pwsh .aiagents\bin\agentctl.ps1` 即可(同名子命令)。
 
 ## Memory 系统
 
@@ -184,20 +225,22 @@ pwsh \\path\\to\\ai-agents-kit\\install.ps1 -MigrateV1
 <项目根>/
 ├── .aiagents/                       # 运行时数据 + 脚本 + 记忆
 │   ├── config.json                  # JSON 配置(主)
-│   ├── bin/                         # agentctl.sh / agent-runner.sh / watch-agent.sh / stop-notify.sh / *.ps1 / filter-output.sh / wait-signal.sh
+│   ├── bin/                         # agentctl / agent-runner / watch-agent / stop-notify / adversarial-review / notify-push / *.ps1
+│   │   └── providers/               # codex.sh / claude.sh / _common.sh / _stream_json_pretty.py(provider 适配层)
+│   ├── prompts/                     # dispatch-preamble.md(派单纪律,跨 provider 共享)
 │   ├── signals/                     # task_ready_* / *_done / *_failed / *_timeout
-│   ├── logs/                        # be_<date>.log / fe_<date>.log / worker-*.log
+│   ├── logs/                        # be_<date>.log / fe_<date>.log / worker-*.log / adversarial-<agent>.log
 │   ├── state/                       # current.json + events.jsonl
-│   ├── runtime/                     # workers.json + heartbeats/<agent>.json
+│   ├── runtime/                     # workers.json + heartbeats/<agent>.json + <agent>.review-base + archive/
 │   └── memory/                      # global / projects / ideas
 ├── .claude/                         # Claude Code 配置
-│   ├── settings.json                # Stop hook 注册 + permissions.allow
+│   ├── settings.json                # Stop hook 注册 + permissions.allow/deny
 │   ├── agents.conf                  # KV 配置(向后兼容,被 v1 脚本 source)
-│   └── commands/                    # 9 个 slash command
-├── CLAUDE.md                        # Claude 主指令(v2 marker)
+│   └── commands/                    # slash command(dispatch / bugfix / review / adversarial-review / memory / ...)
+├── CLAUDE.md                        # Claude 主指令(marker 段)
 └── docs/ai-agents/
-    ├── specs/                       # 01~04 + 00-交接
-    ├── reviews/                     # 后端 + 前端审查
+    ├── specs/                       # 01 需求 / (01.5 设计)/(01.6 测试用例)/ 02 后端 / 03 前端 / 04 修复 / 00 交接
+    ├── reviews/                     # backend/frontend-review.md + adversarial-<agent>-<ts>.md
     └── retrospectives/              # 复盘报告
 ```
 
